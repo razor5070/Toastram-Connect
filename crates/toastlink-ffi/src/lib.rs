@@ -113,7 +113,7 @@ mod tests {
 
     #[test]
     fn invalid_input_never_returns_non_null_handle() {
-        let mut handle = 1usize as *mut ToastLinkHandle;
+        let mut handle = std::ptr::NonNull::<ToastLinkHandle>::dangling().as_ptr();
         let input = br#"{"format":"no"}"#;
         let code = unsafe { toastlink_import_json(input.as_ptr(), input.len(), &mut handle) };
         assert_eq!(code, TOASTLINK_INVALID_FILE);

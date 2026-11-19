@@ -274,7 +274,8 @@ mod tests {
 
     #[test]
     fn import_provides_raw_digest_and_no_secrets_in_metadata_or_debug() {
-        let input = serde_json::to_vec_pretty(&fixture()).unwrap();
+        let case = fixture();
+        let input = serde_json::to_vec_pretty(&case).unwrap();
         let connection = ConnectionFile::from_bytes(&input).unwrap();
         assert_eq!(connection.sha256_hex().len(), 64);
         assert_eq!(
@@ -286,7 +287,7 @@ mod tests {
         assert!(!metadata.contains("disposable_test_enrollment"));
         assert!(!metadata.contains("BEGIN CERTIFICATE"));
         assert!(!format!("{connection:?}").contains("disposable_test_enrollment"));
-        let compact = serde_json::to_vec(&fixture()).unwrap();
+        let compact = serde_json::to_vec(&case).unwrap();
         assert_ne!(
             ConnectionFile::from_bytes(&compact).unwrap().sha256_hex(),
             connection.sha256_hex()
