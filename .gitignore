@@ -1,0 +1,8 @@
+/target
+**/.DS_Store
+*.key
+*.p12
+*.pfx
+*.toastlink
+.env
+*.log

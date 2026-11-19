@@ -1,0 +1,12 @@
+[package]
+name = "toastlink-ffi"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Opaque C ABI for ToastRAM Connect"
+
+[lib]
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[dependencies]
+toastlink-core = { path = "../toastlink-core" }
