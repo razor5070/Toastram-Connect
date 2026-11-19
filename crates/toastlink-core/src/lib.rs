@@ -109,8 +109,7 @@ impl ConnectionFile {
         if bytes.len() > MAX_TOASTLINK_BYTES {
             return Err(ImportError::TooLarge);
         }
-        let wire: WireFile =
-            serde_json::from_slice(bytes).map_err(|_| ImportError::InvalidJson)?;
+        let wire: WireFile = serde_json::from_slice(bytes).map_err(|_| ImportError::InvalidJson)?;
         validate(&wire)?;
         let digest: [u8; 32] = Sha256::digest(bytes).into();
         Ok(Self { wire, digest })
@@ -141,7 +140,10 @@ impl ConnectionFile {
     /// Hex SHA-256 of the exact source bytes, including whitespace.
     /// The issuer must compare this against an independently stored record.
     pub fn sha256_hex(&self) -> String {
-        self.digest.iter().map(|byte| format!("{byte:02x}")).collect()
+        self.digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
     }
 
     /// Intentionally excludes the enrollment token and CA private key.
@@ -202,14 +204,21 @@ fn validate(wire: &WireFile) -> Result<(), ImportError> {
     }
     if wire.tls.ca_certificate_pem.len() > 16_384
         || wire.tls.ca_certificate_pem.contains("PRIVATE KEY")
-        || !wire.tls.ca_certificate_pem.starts_with("-----BEGIN CERTIFICATE-----")
-        || !wire.tls.ca_certificate_pem.trim_end().ends_with("-----END CERTIFICATE-----")
+        || !wire
+            .tls
+            .ca_certificate_pem
+            .starts_with("-----BEGIN CERTIFICATE-----")
+        || !wire
+            .tls
+            .ca_certificate_pem
+            .trim_end()
+            .ends_with("-----END CERTIFICATE-----")
     {
         return Err(ImportError::InvalidField("tls.ca_certificate_pem"));
     }
-    let certs: Vec<_> = rustls_pemfile::certs(
-        &mut std::io::Cursor::new(wire.tls.ca_certificate_pem.as_bytes()),
-    )
+    let certs: Vec<_> = rustls_pemfile::certs(&mut std::io::Cursor::new(
+        wire.tls.ca_certificate_pem.as_bytes(),
+    ))
     .collect::<Result<Vec<_>, _>>()
     .map_err(|_| ImportError::InvalidField("tls.ca_certificate_pem"))?;
     if certs.len() != 1 {
@@ -268,14 +277,20 @@ mod tests {
         let input = serde_json::to_vec_pretty(&fixture()).unwrap();
         let connection = ConnectionFile::from_bytes(&input).unwrap();
         assert_eq!(connection.sha256_hex().len(), 64);
-        assert_eq!(connection.sha256_hex(), format!("{:x}", Sha256::digest(&input)));
+        assert_eq!(
+            connection.sha256_hex(),
+            format!("{:x}", Sha256::digest(&input))
+        );
         let metadata = connection.public_metadata_json();
         assert!(metadata.contains("\"status\":\"unverified\""));
         assert!(!metadata.contains("disposable_test_enrollment"));
         assert!(!metadata.contains("BEGIN CERTIFICATE"));
         assert!(!format!("{connection:?}").contains("disposable_test_enrollment"));
         let compact = serde_json::to_vec(&fixture()).unwrap();
-        assert_ne!(ConnectionFile::from_bytes(&compact).unwrap().sha256_hex(), connection.sha256_hex());
+        assert_ne!(
+            ConnectionFile::from_bytes(&compact).unwrap().sha256_hex(),
+            connection.sha256_hex()
+        );
     }
 
     #[test]
@@ -285,12 +300,14 @@ mod tests {
             "https://user:pass@memory.example.lan",
             "https://memory.example.lan/api",
             "https://memory.example.lan/?token=secret",
-            "https://memory.example.lan/#fragment"
+            "https://memory.example.lan/#fragment",
         ] {
             let mut value = fixture();
             value["server"]["url"] = json!(url);
-            assert!(matches!(ConnectionFile::from_bytes(&serde_json::to_vec(&value).unwrap()),
-                Err(ImportError::InvalidField("server.url"))));
+            assert!(matches!(
+                ConnectionFile::from_bytes(&serde_json::to_vec(&value).unwrap()),
+                Err(ImportError::InvalidField("server.url"))
+            ));
         }
     }
 
@@ -298,37 +315,51 @@ mod tests {
     fn rejects_expired_and_weak_secrets() {
         let mut value = fixture();
         value["enrollment"]["expires_at"] = json!("2020-01-01T00:00:00Z");
-        assert!(matches!(ConnectionFile::from_bytes(&serde_json::to_vec(&value).unwrap()),
-            Err(ImportError::Expired)));
+        assert!(matches!(
+            ConnectionFile::from_bytes(&serde_json::to_vec(&value).unwrap()),
+            Err(ImportError::Expired)
+        ));
         let mut value = fixture();
         value["enrollment"]["token"] = json!("short");
-        assert!(matches!(ConnectionFile::from_bytes(&serde_json::to_vec(&value).unwrap()),
-            Err(ImportError::InvalidField("enrollment.token"))));
+        assert!(matches!(
+            ConnectionFile::from_bytes(&serde_json::to_vec(&value).unwrap()),
+            Err(ImportError::InvalidField("enrollment.token"))
+        ));
     }
 
     #[test]
     fn rejects_unknown_fields_and_oversized_files() {
         let mut value = fixture();
         value["unexpected"] = json!("payload");
-        assert!(matches!(ConnectionFile::from_bytes(&serde_json::to_vec(&value).unwrap()),
-            Err(ImportError::InvalidJson)));
-        assert!(matches!(ConnectionFile::from_bytes(&vec![b'a'; MAX_TOASTLINK_BYTES + 1]),
-            Err(ImportError::TooLarge)));
+        assert!(matches!(
+            ConnectionFile::from_bytes(&serde_json::to_vec(&value).unwrap()),
+            Err(ImportError::InvalidJson)
+        ));
+        assert!(matches!(
+            ConnectionFile::from_bytes(&vec![b'a'; MAX_TOASTLINK_BYTES + 1]),
+            Err(ImportError::TooLarge)
+        ));
     }
 
     #[test]
     fn rejects_private_key_substitution_and_invalid_ca() {
         let mut value = fixture();
-        value["tls"]["ca_certificate_pem"] = json!("-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----");
-        assert!(matches!(ConnectionFile::from_bytes(&serde_json::to_vec(&value).unwrap()),
-            Err(ImportError::InvalidField("tls.ca_certificate_pem"))));
+        value["tls"]["ca_certificate_pem"] =
+            json!("-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----");
+        assert!(matches!(
+            ConnectionFile::from_bytes(&serde_json::to_vec(&value).unwrap()),
+            Err(ImportError::InvalidField("tls.ca_certificate_pem"))
+        ));
     }
 
     #[test]
     fn path_import_rejects_regular_file_oversize() {
         let temp = std::env::temp_dir().join(format!("toastlink-{}.toastlink", Uuid::new_v4()));
         std::fs::write(&temp, vec![b'a'; MAX_TOASTLINK_BYTES + 2]).unwrap();
-        assert!(matches!(ConnectionFile::from_path(&temp), Err(ImportError::TooLarge)));
+        assert!(matches!(
+            ConnectionFile::from_path(&temp),
+            Err(ImportError::TooLarge)
+        ));
         std::fs::remove_file(&temp).unwrap();
     }
 }
