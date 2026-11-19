@@ -77,7 +77,7 @@ Example non-streaming request:
 - **`memory_limit: 0`:** no memory lookup, but **do return** empty `memory_retrieval` metadata.
 - **`memory_limit: 1..30`:** retrieve up to that many memories, add them to the model's context as reference-only data, and return the retrieval metadata below.
 - Optional `retrieval_mode` is an adapter-level selection hint. The reference implementation recognizes `recent` (default), `associative`, and `associative_adaptive`. Internal ranking and search algorithms are **not** part of the HTTP wire contract.
-- Strip adapter-only fields `memory_limit`, `retrieval_mode`, and `memory_capture` before forwarding to an Ollama backend.
+- When `memory_limit` is supplied, strip adapter-only fields `memory_limit`, `retrieval_mode`, and `memory_capture` before forwarding to Ollama. When `memory_limit` is omitted, the reference adapter forwards the request unchanged.
 - Model-generated save instructions are parsed by the **desktop/client**, not by this v1.6 chat transport. Do not automatically save a model's response on this route.
 
 Example successful `200` **non-streaming** response (the model's actual content varies):
