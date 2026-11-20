@@ -88,6 +88,7 @@ impl Drop for Enrollment {
 pub struct ConnectionFile {
     wire: WireFile,
     digest: [u8; 32],
+    server_origin: String,
 }
 
 impl fmt::Debug for ConnectionFile {
@@ -110,9 +111,13 @@ impl ConnectionFile {
             return Err(ImportError::TooLarge);
         }
         let wire: WireFile = serde_json::from_slice(bytes).map_err(|_| ImportError::InvalidJson)?;
-        validate(&wire)?;
+        let server_origin = validate(&wire)?;
         let digest: [u8; 32] = Sha256::digest(bytes).into();
-        Ok(Self { wire, digest })
+        Ok(Self {
+            wire,
+            digest,
+            server_origin,
+        })
     }
 
     /// Bounded file read, rejecting a symlink as the immediate path.
@@ -156,7 +161,7 @@ impl ConnectionFile {
             "server": {
                 "id": self.wire.server.id,
                 "name": self.wire.server.name,
-                "url": self.wire.server.url
+                "url": self.server_origin
             },
             "enrollment_id": self.wire.enrollment.id,
             "expires_at": self.wire.enrollment.expires_at,
@@ -166,11 +171,11 @@ impl ConnectionFile {
     }
 
     pub fn server_url(&self) -> &str {
-        &self.wire.server.url
+        &self.server_origin
     }
 }
 
-fn validate(wire: &WireFile) -> Result<(), ImportError> {
+fn validate(wire: &WireFile) -> Result<String, ImportError> {
     if wire.format != CONNECTION_FORMAT || wire.version != CONNECTION_VERSION {
         return Err(ImportError::UnsupportedFormat);
     }
@@ -202,6 +207,9 @@ fn validate(wire: &WireFile) -> Result<(), ImportError> {
     {
         return Err(ImportError::InvalidField("server.url"));
     }
+    // Expose precisely the canonical origin obtained from validation,
+    // never the potentially ambiguous original URL spelling.
+    let server_origin = url.origin().ascii_serialization();
     if wire.tls.ca_certificate_pem.len() > 16_384
         || wire.tls.ca_certificate_pem.contains("PRIVATE KEY")
         || !wire
@@ -224,6 +232,28 @@ fn validate(wire: &WireFile) -> Result<(), ImportError> {
     if certs.len() != 1 {
         return Err(ImportError::InvalidField("tls.ca_certificate_pem"));
     }
+    // PEM decoding alone does not establish that the data is X.509 or a CA.
+    // Require complete DER consumption, CA BasicConstraints, and certificate
+    // signing permissions when KeyUsage is present. This does NOT authenticate
+    // the issuer or establish a trusted TLS connection.
+    let (remainder, certificate) =
+        x509_parser::parse_x509_certificate(certs[0].as_ref())
+            .map_err(|_| ImportError::InvalidField("tls.ca_certificate_pem"))?;
+    let is_ca = certificate
+        .basic_constraints()
+        .map_err(|_| ImportError::InvalidField("tls.ca_certificate_pem"))?
+        .is_some_and(|constraints| constraints.value.ca);
+    let key_usage_permits_signing = certificate
+        .key_usage()
+        .map_err(|_| ImportError::InvalidField("tls.ca_certificate_pem"))?
+        .is_none_or(|usage| usage.value.key_cert_sign());
+    if !remainder.is_empty()
+        || certificate.extensions_map().is_err()
+        || !is_ca
+        || !key_usage_permits_signing
+    {
+        return Err(ImportError::InvalidField("tls.ca_certificate_pem"));
+    }
     let id = &wire.enrollment.id;
     let parsed = Uuid::parse_str(id).map_err(|_| ImportError::InvalidField("enrollment.id"))?;
     if parsed.get_version_num() != 4 || parsed.to_string() != *id {
@@ -242,7 +272,7 @@ fn validate(wire: &WireFile) -> Result<(), ImportError> {
     if deadline <= Utc::now() {
         return Err(ImportError::Expired);
     }
-    Ok(())
+    Ok(server_origin)
 }
 
 #[cfg(test)]
@@ -310,6 +340,42 @@ mod tests {
                 Err(ImportError::InvalidField("server.url"))
             ));
         }
+    }
+
+    #[test]
+    fn canonical_origin_matches_metadata_and_accessor() {
+        for url in [
+            "https://MEMORY.EXAMPLE.LAN:18443/",
+            "https://memory.example.lan:18443",
+            "https://memory.example.lan:18443/",
+        ] {
+            let mut value = fixture();
+            value["server"]["url"] = json!(url);
+            let connection =
+                ConnectionFile::from_bytes(&serde_json::to_vec(&value).unwrap()).unwrap();
+            assert_eq!(connection.server_url(), "https://memory.example.lan:18443");
+            let metadata: Value = serde_json::from_str(&connection.public_metadata_json()).unwrap();
+            assert_eq!(metadata["server"]["url"], connection.server_url());
+            assert_eq!(metadata["status"], "unverified");
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_der_and_non_ca_certificates() {
+        let mut value = fixture();
+        value["tls"]["ca_certificate_pem"] =
+            json!("-----BEGIN CERTIFICATE-----\nAQIDBA==\n-----END CERTIFICATE-----");
+        assert!(matches!(
+            ConnectionFile::from_bytes(&serde_json::to_vec(&value).unwrap()),
+            Err(ImportError::InvalidField("tls.ca_certificate_pem"))
+        ));
+
+        value["tls"]["ca_certificate_pem"] =
+            json!(include_str!("../../../tests/fixtures/non-ca.pem"));
+        assert!(matches!(
+            ConnectionFile::from_bytes(&serde_json::to_vec(&value).unwrap()),
+            Err(ImportError::InvalidField("tls.ca_certificate_pem"))
+        ));
     }
 
     #[test]
