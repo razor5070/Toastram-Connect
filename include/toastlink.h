@@ -1,5 +1,6 @@
 /* ToastRAM Connect C ABI (draft, not yet released).
- * Offline import only. No certificate verification or enrollment occurs here.
+ * Offline import only: parses CA certificate structure but performs no
+ * TLS identity verification or enrollment.
  * Link to toastlink_ffi's platform-specific static or shared library.
  */
 #ifndef TOASTLINK_H
