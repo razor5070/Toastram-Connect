@@ -41,3 +41,22 @@ system-specific credential stores and platform binaries will be implemented
 as adapters, not separate protocol implementations.
 
 License is pending owner selection.
+
+### Windows C++ import
+
+Build the DLL with `cargo build --locked -p toastlink-ffi`. Include
+`include/toastlink.hpp`, link the matching `toastlink_ffi.dll.lib`, and
+place `toastlink_ffi.dll` beside the executable. Pass at most 64 KiB to
+`toastlink::import_file`. Its owning handle releases the import automatically.
+`toastlink::metadata` returns public JSON for preview. A successful import
+has status `unverified`.
+
+Verified on Windows x64 with the Rust workspace tests and a C++17 client
+linked against the Debug DLL. The client exercised successful import, metadata
+retrieval and preservation of its original handle after a failed replacement.
+
+At server revision 54a1d65 the provisioner creates HTTPS configuration and
+an administrator bearer token. The next shared milestone requires issuer
+records, an independently authenticated server identity, atomic single-use
+enrollment, and server-enforced scoped credential revocation. Desktop
+credential storage and authenticated memory readiness tests follow enrollment.
