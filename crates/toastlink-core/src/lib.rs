@@ -236,9 +236,8 @@ fn validate(wire: &WireFile) -> Result<String, ImportError> {
     // Require complete DER consumption, CA BasicConstraints, and certificate
     // signing permissions when KeyUsage is present. This does NOT authenticate
     // the issuer or establish a trusted TLS connection.
-    let (remainder, certificate) =
-        x509_parser::parse_x509_certificate(certs[0].as_ref())
-            .map_err(|_| ImportError::InvalidField("tls.ca_certificate_pem"))?;
+    let (remainder, certificate) = x509_parser::parse_x509_certificate(certs[0].as_ref())
+        .map_err(|_| ImportError::InvalidField("tls.ca_certificate_pem"))?;
     let is_ca = certificate
         .basic_constraints()
         .map_err(|_| ImportError::InvalidField("tls.ca_certificate_pem"))?
@@ -351,8 +350,7 @@ mod tests {
         ] {
             let mut value = fixture();
             value["server"]["url"] = json!(url);
-            let connection =
-                ConnectionFile::from_bytes(&serde_json::to_vec(&value).unwrap()).unwrap();
+            let connection = ConnectionFile::from_bytes(&serde_json::to_vec(&value).unwrap()).unwrap();
             assert_eq!(connection.server_url(), "https://memory.example.lan:18443");
             let metadata: Value = serde_json::from_str(&connection.public_metadata_json()).unwrap();
             assert_eq!(metadata["server"]["url"], connection.server_url());
