@@ -60,3 +60,5 @@ an administrator bearer token. The next shared milestone requires issuer
 records, an independently authenticated server identity, atomic single-use
 enrollment, and server-enforced scoped credential revocation. Desktop
 credential storage and authenticated memory readiness tests follow enrollment.
+
+The authoritative frozen enrollment wire contract is [Enrollment API v1](docs/ENROLLMENT-API-v1.md).

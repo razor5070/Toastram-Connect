@@ -1,6 +1,6 @@
-# ToastRAM Connect Enrollment API v1 — proposal 2
+# ToastRAM Connect Enrollment API v1 — frozen v1
 
-Status: proposed for joint review. Freeze requires agreement from both maintainers. This specifies client pairing only. Issuance and administrative revocation belong to the server. Memory Transport API 1.6 continues to govern memory operations.
+Status: frozen by owner approval, based on proposal 2 at 95a22ea. This specifies client pairing only. Issuance and administrative revocation belong to the server. Memory Transport API 1.6 continues to govern memory operations.
 
 ## File and independent trust
 
