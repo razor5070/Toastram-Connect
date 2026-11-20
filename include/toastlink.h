@@ -19,7 +19,9 @@ enum {
     TOASTLINK_INVALID_ARGUMENT = 1,
     TOASTLINK_INVALID_FILE = 2,
     TOASTLINK_BUFFER_TOO_SMALL = 3,
-    TOASTLINK_INTERNAL_ERROR = 4
+    TOASTLINK_INTERNAL_ERROR = 4,
+    TOASTLINK_EXPIRED = 5,           /* Request a fresh connection file. */
+    TOASTLINK_UNSUPPORTED_FORMAT = 6 /* Unsupported version or format. */
 };
 
 /* The caller owns the returned handle. data must remain readable during call.
