@@ -44,8 +44,12 @@ The example certificate and token are placeholders and not valid credentials.
 
 The draft importer requires canonical lowercase UUIDv4 enrollment IDs, 32
 lowercase hexadecimal characters for the server ID, a valid HTTPS server URL,
-a single PEM certificate, a URL-safe token of 32-256 characters, and a
-non-expired RFC3339 timestamp. It rejects unknown fields and files over 64 KiB.
+a single parseable X.509 PEM CA certificate (with CA BasicConstraints and
+certificate-signing KeyUsage when present), a URL-safe token of 32-256
+characters, and a non-expired RFC3339 timestamp. The importer exposes the
+canonical parsed HTTPS origin, never the original URL spelling. The C ABI
+reports expired and unsupported files with distinct reason codes.
+These checks do **not** verify certificate trust, issuer identity, or TLS. It rejects unknown fields and files over 64 KiB.
 
 **The public server CA certificate is not a private key and must never include
 one.** An attacker who replaces the file can substitute both the server URL
