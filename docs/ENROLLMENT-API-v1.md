@@ -1,10 +1,12 @@
-# ToastRAM Connect Enrollment API v1 — proposal 1
+# ToastRAM Connect Enrollment API v1 — proposal 2
 
 Status: proposed for joint review. Freeze requires agreement from both maintainers. This specifies client pairing only. Issuance and administrative revocation belong to the server. Memory Transport API 1.6 continues to govern memory operations.
 
 ## File and independent trust
 
 Use the existing strict toastram.connection version 1 envelope in PROTOCOL.md, maximum 65,536 bytes. Hash the exact file bytes with SHA-256, including whitespace. The issuer generates a token from 32 random bytes encoded as unpadded base64url, stores the issuance record, and sets expiry to ten minutes after issuance. The importer retains its existing token syntax for parsing. The server clock determines eligibility at redemption.
+
+The operator exports the existing persistent server identity, canonical origin and CA DER fingerprint through a separately trusted provisioning workflow. A record delivered alongside the connection file by the same untrusted channel is insufficient.
 
 Before *either* HTTP call the SDK requires a trusted provisioning record obtained independently of the file: canonical HTTPS origin (including non-default port), server.id, and lowercase SHA-256 hex of the DER bytes of the issuer CA certificate. Match all three. Verify TLS certificate chain, hostname/IP SAN, validity and server-auth usage against that CA for every connection. Disable redirects and TLS early data. A changed trust record requires independently authorized reprovisioning. An imported file alone has state unverified. A successful preflight conveys eligibility at that instant only.
 
@@ -30,9 +32,15 @@ The SDK verifies the echoed ID. Repeated preflights are safe. No credential is i
 
 201 after durable commit:
 
-    {"token_type":"Bearer","access_token":"<opaque unpadded base64url>","client_id":"<canonical lowercase UUIDv4>","server_id":"8f694b5238e9a11b86c4cb003b1b346a","scopes":["memory.session"],"expires_at":"2030-01-01T00:00:00Z"}
+    {"token_type":"Bearer","access_token":"<opaque unpadded base64url>","client_id":"<canonical lowercase UUIDv4>","server_id":"8f694b5238e9a11b86c4cb003b1b346a","scopes":["read","chat","write"],"expires_at":"2030-01-02T00:00:00Z"}
 
-Generate the session token from at least 32 cryptographically random bytes (encoded length 43–256). expires_at is a future RFC3339 UTC instant; the issuer selects the session lifetime. v1 defines one fixed profile, scopes exactly ["memory.session"]. It permits the existing desktop model discovery, memory-enabled chat, access check, explicit save and acknowledgement routes under their existing transport contracts. It confers no administrative, issuance, cross-client or model-management rights. Each redeemed identity is independently revocable. The server must enforce scope, expiry and revocation on every new authenticated request.
+Generate the session token from at least 32 cryptographically random bytes (encoded length 43–256). expires_at is a future RFC3339 UTC instant; the issuer selects the session lifetime. The scopes array is an unordered, nonempty, duplicate-free subset of read, chat and write, exactly as authorized at issuance. Reject any other value, including delete, diagnostics and administrative scopes. A read-only grant is valid. Pairing and read access must succeed independently of write readiness. A client must not use an unsuccessful write access check to invalidate a read-only credential.
+
+Alongside existing authentication the server verifies the dynamically issued credential, its expiry, current revocation state and the route's required permissions on every relevant request. No fallback to a more privileged identity. A write grant is required for every durable memory modification, including indirect saves through chat if supported. Read-only credentials cannot use chat-only routes. Issuer and administrative actions are outside every ordinary session.
+
+## Durable enrollment ledger
+
+Before issuing a file or accepting either enrollment request, verify a durable transactional enrollment ledger is available. A RAM-backed memory engine may pair only with separately verified durable enrollment storage. If durability or ledger freshness cannot be established, return 503 temporarily_unavailable and fail closed for dynamic credential validation. Issuance records, consumption, credential creation and revocation must survive restart. A stale snapshot must never resurrect a spent enrollment or revoked client. Keep authoritative state outside the memory snapshot rollback domain or verify freshness against independently durable state before serving. If recovery cannot establish freshness, quarantine affected credentials and enrollments until safely invalidated or reconciled.
 
 Atomically consume the enrollment and create one scoped credential. A crash before commit leaves neither change. Exactly one concurrent redemption can succeed. Subsequent attempts produce the generic denial below. Persist only protected verifiers on the server. Never return the token a second time.
 
@@ -46,7 +54,7 @@ SDK sends at most one automatic preflight retry after a transient transport erro
 
 ## Shared acceptance fixtures before freeze
 
-Use disposable CA, TLS server and issuer records. For a valid baseline use tests/fixtures/ca.pem as the offline parsing fixture; generate separate disposable TLS credentials for network tests. Both maintainers should approve a byte-identical sample file, its independently computed digest and a trusted provisioning tuple before freezing the wire contract. Acceptance cases:
+Use disposable CA, TLS server and issuer records. For a valid baseline use tests/fixtures/ca.pem as the offline parsing fixture; generate separate disposable TLS credentials for network tests. Both maintainers should approve a byte-identical sample file, its independently computed digest and a trusted provisioning tuple before freezing the wire contract. The proposed offline vectors are in tests/fixtures/enrollment-v1. SHA256SUMS covers the exact sample.toastlink bytes. operator-trust.json represents the independently delivered operator record in the test harness. The token is deliberately public. Use a fixture clock of 2030-01-01T00:01:00Z. Generate separate identities for live disposable TLS tests. Acceptance cases:
 
 - Matching trust tuple, hostname, bytes and secret: repeated preflight 200; redeem 201; authenticated memory access succeeds.
 - Replace the CA and recompute the file hash, change the host, or present an expired TLS cert: no enrollment HTTP request reaches the peer.
@@ -54,6 +62,8 @@ Use disposable CA, TLS server and issuer records. For a valid baseline use tests
 - Race two redemptions: one 201, one 401; exactly one durable client record.
 - Lose the response after commit or fail local secret storage: no usable SDK session; revoke orphan by enrollment record and re-pair.
 - Pair two clients, revoke one and restart server: that client receives 401 on its next memory request; the other still succeeds. Enrollment bearer fails on protected memory routes; session bearer fails on enrollment routes.
+- Issue read alone: an authorized read succeeds, while save, write access check, chat, delete, diagnostics and administration are denied. Test chat without write against implicit save paths. Test expiry and revocation across each protected route family.
+- Start a RAM-only instance without verified durable enrollment storage: issuance fails, preflight and redeem return 503. Restore a snapshot taken before consumption and revocation: neither the spent file nor the revoked credential becomes usable. Repeat with ledger freshness unverifiable.
 - Rate limit returns 429 with delay; credentials and request bodies absent from diagnostic logs.
 
 Ownership: ToastRAM implements issuer, endpoints and credential enforcement. Connect implements import, trust, client handshake, protected credential storage and SDK fixtures. Validate together on disposable instances.
