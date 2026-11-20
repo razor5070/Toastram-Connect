@@ -34,6 +34,28 @@ fn confirm_windows(origin: &str) -> bool {
 
 fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    #[cfg(windows)]
+    if args.len() == 4 && args[0] == "resume" {
+        let read = |path: &std::ffi::OsStr, max: u64| -> Result<Vec<u8>, String> {
+            let mut bytes = Vec::new();
+            File::open(path)
+                .and_then(|f| f.take(max + 1).read_to_end(&mut bytes))
+                .map_err(|_| "Cannot read pairing files")?;
+            if bytes.len() as u64 > max {
+                return Err("Input too large".into());
+            }
+            Ok(bytes)
+        };
+        let bytes = zeroize::Zeroizing::new(read(&args[1], 65536)?);
+        let trust =
+            serde_json::from_slice(&read(&args[2], 16384)?).map_err(|_| "Invalid trust record")?;
+        return toastlink_core::pairing::resume_windows(
+            &bytes,
+            trust,
+            args[3].to_str().ok_or("Invalid client ID")?,
+        )
+        .map_err(|e| format!("Session recovery: {e:?}"));
+    }
     if args.len() != 3 || !(args[0] == "preflight" || args[0] == "pair" || args[0] == "pair-dialog")
     {
         return Err("Usage: toastlink preflight|pair CONNECTION_FILE OPERATOR_TRUST_JSON".into());

@@ -36,6 +36,7 @@ def identity(label, ca=None):
             x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]),False)
     return key,builder.sign(ca[0] if ca else key,hashes.SHA256())
 
+import os
 with tempfile.TemporaryDirectory() as tmp:
     root = pathlib.Path(tmp)
     ca = identity("Disposable CA")
@@ -76,7 +77,7 @@ with tempfile.TemporaryDirectory() as tmp:
         trust=dict(origin=origin,server_id=expected["server_id"],ca_der_sha256=ca[1].fingerprint(hashes.SHA256()).hex())
         def run(mode, record, consent=""):
             (root/"trust").write_text(json.dumps(record))
-            return subprocess.run([cli,mode,root/"file",root/"trust"],input=consent,text=True,capture_output=True,timeout=30)
+            return subprocess.run([cli,mode,root/"file",root/"trust"],input=consent,text=True,capture_output=True,timeout=30,env={**os.environ,"LOCALAPPDATA":str(root)})
         assert run("preflight",dict(trust,ca_der_sha256="0"*64)).returncode and not requests
         result=run("preflight",trust); assert result.returncode==0 and len(requests)==1, result.stderr
         assert run("pair",trust,"NO\n").returncode and len(requests)==2
@@ -88,6 +89,17 @@ with tempfile.TemporaryDirectory() as tmp:
         assert result.returncode==0, result.stderr
         locator=f'{origin}|{expected["server_id"]}|{client_id}|{trust["ca_der_sha256"]}'
         assert locator in result.stdout
+        descriptor=root/"ToastRAM Connect"/"sessions"/(hashlib.sha256(origin.encode()).hexdigest()+".json")
+        saved=json.loads(descriptor.read_bytes())
+        assert saved==dict(version=1,origin=origin,locator=locator,ca_pem=file["tls"]["ca_certificate_pem"])
+        descriptor.unlink()
+        file["enrollment"]["expires_at"]="2000-01-01T00:00:00Z"
+        (root/"file").write_text(json.dumps(file))
+        prior_requests=len(requests)
+        recovery=subprocess.run([cli,"resume",root/"file",root/"trust",client_id],
+                                env={**os.environ,"LOCALAPPDATA":str(root)},capture_output=True,timeout=5)
+        assert recovery.returncode==0 and json.loads(descriptor.read_bytes())==saved
+        assert len(requests)==prior_requests
         # Successful deletion checks that the specific disposable credential existed.
         assert ctypes.windll.advapi32.CredDeleteW(locator+".ToastRAM Connect v1",1,0)
         print("PASS: scoped grant stored and disposable credential removed")

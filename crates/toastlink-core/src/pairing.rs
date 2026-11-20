@@ -174,6 +174,76 @@ impl Eligible<'_> {
         keyring::Entry::new("ToastRAM Connect v1", &locator)
             .and_then(|entry| entry.set_password(&grant.access_token))
             .map_err(|_| Error::RedemptionUncertain)?;
+        write_profile(
+            &locator,
+            pairing.file.server_url(),
+            &pairing.file.wire.tls.ca_certificate_pem,
+        )
+        .map_err(|_| Error::RedemptionUncertain)?;
         Ok(locator)
     }
+}
+
+#[cfg(windows)]
+fn write_profile(locator: &str, origin: &str, ca: &str) -> Result<(), Error> {
+    use std::io::Write;
+    let base = std::env::var_os("LOCALAPPDATA").ok_or(Error::Protocol)?;
+    let dir = std::path::PathBuf::from(base)
+        .join("ToastRAM Connect")
+        .join("sessions");
+    std::fs::create_dir_all(&dir).map_err(|_| Error::Protocol)?;
+    let path = dir.join(format!("{:x}.json", Sha256::digest(origin.as_bytes())));
+    let mut temp = tempfile::NamedTempFile::new_in(dir).map_err(|_| Error::Protocol)?;
+    serde_json::to_writer(
+        &mut temp,
+        &json!({"version":1,"origin":origin,"locator":locator,"ca_pem":ca}),
+    )
+    .map_err(|_| Error::Protocol)?;
+    temp.flush()
+        .and_then(|_| temp.as_file().sync_all())
+        .map_err(|_| Error::Protocol)?;
+    temp.persist(path).map_err(|_| Error::Protocol)?;
+    Ok(())
+}
+
+/// Recover the public descriptor for a previously redeemed Windows credential.
+/// No enrollment token is used. The certificate digest is bound into the existing vault key.
+#[cfg(windows)]
+pub fn resume_windows(bytes: &[u8], trust: Trust, client: &str) -> Result<(), Error> {
+    if bytes.len() > MAX_TOASTLINK_BYTES {
+        return Err(Error::Protocol);
+    }
+    let file: WireFile = serde_json::from_slice(bytes).map_err(|_| Error::Protocol)?;
+    let origin = Url::parse(&file.server.url)
+        .map_err(|_| Error::Protocol)?
+        .origin()
+        .ascii_serialization();
+    if !origin.starts_with("https://")
+        || origin != trust.origin
+        || file.server.id != trust.server_id
+        || Uuid::parse_str(client)
+            .map_err(|_| Error::Protocol)?
+            .to_string()
+            != client
+    {
+        return Err(Error::TrustMismatch);
+    }
+    let pem = &file.tls.ca_certificate_pem;
+    let certs = rustls_pemfile::certs(&mut std::io::Cursor::new(pem))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| Error::Protocol)?;
+    if certs.len() != 1 || format!("{:x}", Sha256::digest(certs[0].as_ref())) != trust.ca_der_sha256
+    {
+        return Err(Error::TrustMismatch);
+    }
+    let locator = format!(
+        "{}|{}|{}|{}",
+        origin, trust.server_id, client, trust.ca_der_sha256
+    );
+    let _secret = Zeroizing::new(
+        keyring::Entry::new("ToastRAM Connect v1", &locator)
+            .and_then(|e| e.get_password())
+            .map_err(|_| Error::Denied)?,
+    );
+    write_profile(&locator, &origin, pem)
 }

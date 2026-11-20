@@ -79,4 +79,11 @@ The Windows disposable TLS smoke test uses Python with cryptography installed:
 `python tests/disposable_tls.py target/debug/toastlink.exe`.
 It uses a temporary loopback TLS server and removes its disposable Windows
 credential. Real server replay, revocation and rollback behavior require
-joint integration testing. Memory request/session handoff is still pending.
+joint integration testing. Successful enrollment records the public origin, CA and vault locator atomically
+in the current user's local application data under ToastRAM Connect/sessions.
+The token stays in Windows Credential Manager. For credentials issued before
+descriptor support, run `toastlink resume FILE.toastlink OPERATOR.json CLIENT_UUID`.
+This command checks the existing credential binding offline and does not redeem the file.
+C++ clients using cpp-httplib with OpenSSL can open the binding from
+include/toastlink_win_http.hpp and apply it to same-origin requests. The server
+enforces the credential's current scopes, expiry and revocation.
