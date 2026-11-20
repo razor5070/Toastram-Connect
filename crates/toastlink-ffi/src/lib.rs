@@ -4,13 +4,24 @@
 use std::ffi::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
-use toastlink_core::{ConnectionFile, MAX_TOASTLINK_BYTES};
+use toastlink_core::{ConnectionFile, ImportError, MAX_TOASTLINK_BYTES};
 
 pub const TOASTLINK_OK: i32 = 0;
 pub const TOASTLINK_INVALID_ARGUMENT: i32 = 1;
 pub const TOASTLINK_INVALID_FILE: i32 = 2;
 pub const TOASTLINK_BUFFER_TOO_SMALL: i32 = 3;
 pub const TOASTLINK_INTERNAL_ERROR: i32 = 4;
+pub const TOASTLINK_EXPIRED: i32 = 5;
+pub const TOASTLINK_UNSUPPORTED_FORMAT: i32 = 6;
+
+// Existing status values remain unchanged for C ABI compatibility.
+fn map_import_error(error: ImportError) -> i32 {
+    match error {
+        ImportError::Expired => TOASTLINK_EXPIRED,
+        ImportError::UnsupportedFormat => TOASTLINK_UNSUPPORTED_FORMAT,
+        _ => TOASTLINK_INVALID_FILE,
+    }
+}
 
 /// Opaque, owning handle. Created by toastlink_import_json and freed once.
 pub struct ToastLinkHandle {
@@ -45,7 +56,7 @@ pub unsafe extern "C" fn toastlink_import_json(
                 unsafe { *out_handle = Box::into_raw(Box::new(ToastLinkHandle { value })) };
                 TOASTLINK_OK
             }
-            Err(_) => TOASTLINK_INVALID_FILE,
+            Err(error) => map_import_error(error),
         }
     })) {
         Ok(code) => code,
@@ -118,6 +129,40 @@ mod tests {
         let code = unsafe { toastlink_import_json(input.as_ptr(), input.len(), &mut handle) };
         assert_eq!(code, TOASTLINK_INVALID_FILE);
         assert!(handle.is_null());
+    }
+
+    #[test]
+    fn reports_expired_and_unsupported_files_to_c_callers() {
+        fn file_bytes(format: &str, expires_at: &str) -> Vec<u8> {
+            serde_json::json!({
+                "format": format,
+                "version": 1,
+                "server": {
+                    "id": "8f694b5238e9a11b86c4cb003b1b346a",
+                    "name": "Local ToastRAM",
+                    "url": "https://memory.example.lan:18443"
+                },
+                "tls": {
+                    "ca_certificate_pem": include_str!("../../../tests/fixtures/ca.pem")
+                },
+                "enrollment": {
+                    "id": "a2940e55-374b-4a4f-a5e4-b15e3c3a9ed8",
+                    "token": "disposable_test_enrollment_secret_only_for_tests",
+                    "expires_at": expires_at
+                }
+            }).to_string().into_bytes()
+        }
+
+        for (format, expires_at, expected) in [
+            ("toastram.connection", "2020-01-01T00:00:00Z", TOASTLINK_EXPIRED),
+            ("unknown.format", "2099-01-01T00:00:00Z", TOASTLINK_UNSUPPORTED_FORMAT),
+        ] {
+            let bytes = file_bytes(format, expires_at);
+            let mut handle = ptr::null_mut();
+            let rc = unsafe { toastlink_import_json(bytes.as_ptr(), bytes.len(), &mut handle) };
+            assert_eq!(rc, expected);
+            assert!(handle.is_null());
+        }
     }
 
     #[test]
