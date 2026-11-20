@@ -150,7 +150,9 @@ mod tests {
                     "token": "disposable_test_enrollment_secret_only_for_tests",
                     "expires_at": expires_at
                 }
-            }).to_string().into_bytes()
+            })
+            .to_string()
+            .into_bytes()
         }
 
         for (format, expires_at, expected) in [
