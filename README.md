@@ -9,7 +9,8 @@ ToastRAM remains the server; client wrappers will call the native library.
 
 ## Project boundaries
 
-- **Rust core:** bounded file import, strict format validation, SHA-256 fingerprinting,
+- **Rust core:** bounded file import, canonical HTTPS server origin, X.509 CA
+  certificate structure and signing-purpose checks, SHA-256 fingerprinting,
   and, later, verified HTTPS enrollment and credential handoff.
 - **C ABI:** stable opaque handles and minimal metadata introspection so C/C++,
   C#, Swift, Kotlin, Python, and other languages can build thin wrappers.
