@@ -428,3 +428,4 @@ mod tests {
         std::fs::remove_file(&temp).unwrap();
     }
 }
+pub mod pairing;

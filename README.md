@@ -62,3 +62,21 @@ enrollment, and server-enforced scoped credential revocation. Desktop
 credential storage and authenticated memory readiness tests follow enrollment.
 
 The authoritative frozen enrollment wire contract is [Enrollment API v1](docs/ENROLLMENT-API-v1.md).
+
+### Enrollment v1 client test
+
+Build the Windows helper with `cargo build --locked --bin toastlink`.
+Run `toastlink preflight FILE.toastlink OPERATOR.json` to check eligibility.
+Run `toastlink pair FILE.toastlink OPERATOR.json` for interactive redemption.
+The operator record must come from a trusted channel independent of the file.
+The CLI displays the credential locator after storage. Windows desktop hosts
+can launch the same executable with `pair-dialog` for a native consent dialog.
+Exit codes are 0 for success, 2 for declined consent, 3 for uncertain
+redemption (reconcile with issuer), and 1 for other failures.
+Preflight success is not a memory session readiness check.
+
+The Windows disposable TLS smoke test uses Python with cryptography installed:
+`python tests/disposable_tls.py target/debug/toastlink.exe`.
+It uses a temporary loopback TLS server and removes its disposable Windows
+credential. Real server replay, revocation and rollback behavior require
+joint integration testing. Memory request/session handoff is still pending.
