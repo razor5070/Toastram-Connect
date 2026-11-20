@@ -56,19 +56,63 @@ fn run() -> Result<(), String> {
         )
         .map_err(|e| format!("Session recovery: {e:?}"));
     }
-    if args.len() != 3 || !(args[0] == "preflight" || args[0] == "pair" || args[0] == "pair-dialog")
+    if (args.len() == 2 || (args.len() == 4 && args[2] == "--output")) && args[0] == "inspect" {
+        let file = ConnectionFile::from_path(Path::new(&args[1])).map_err(|e| e.to_string())?;
+        let mut preview: serde_json::Value =
+            serde_json::from_str(&file.public_metadata_json()).map_err(|_| "Invalid metadata")?;
+        #[cfg(windows)]
+        {
+            preview["previous_binding_changed"] = serde_json::Value::Bool(
+                toastlink_core::pairing::previous_binding_changed(&file)
+                    .map_err(|_| "Cannot inspect existing session bindings")?,
+            );
+        }
+        let metadata = preview.to_string();
+        if args.len() == 4 {
+            use std::io::Write;
+            let mut output = std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&args[3])
+                .map_err(|_| "Cannot create identity preview")?;
+            output
+                .write_all(metadata.as_bytes())
+                .map_err(|_| "Cannot write identity preview")?;
+        } else {
+            println!("{metadata}");
+        }
+        return Ok(());
+    }
+    let inline_trust = args.len() == 4 && args[2] == "--verified-tuple";
+    if !(inline_trust || args.len() == 3)
+        || !(args[0] == "preflight" || args[0] == "pair" || args[0] == "pair-dialog")
     {
-        return Err("Usage: toastlink preflight|pair CONNECTION_FILE OPERATOR_TRUST_JSON".into());
+        return Err("Usage: toastlink inspect FILE or toastlink preflight|pair|pair-dialog FILE TRUST_RECORD".into());
     }
     let file = ConnectionFile::from_path(Path::new(&args[1])).map_err(|e| e.to_string())?;
-    let mut raw = Vec::new();
-    File::open(&args[2])
-        .and_then(|f| f.take(16385).read_to_end(&mut raw))
-        .map_err(|_| "Cannot read operator trust record")?;
+    let raw = if inline_trust {
+        args[3]
+            .to_str()
+            .ok_or("Invalid trusted tuple")?
+            .as_bytes()
+            .to_vec()
+    } else {
+        let mut raw = Vec::new();
+        File::open(&args[2])
+            .and_then(|f| f.take(16385).read_to_end(&mut raw))
+            .map_err(|_| "Cannot read operator trust record")?;
+        raw
+    };
     if raw.len() > 16384 {
         return Err("Operator record exceeds size limit".into());
     }
     let trust: Trust = serde_json::from_slice(&raw).map_err(|_| "Invalid operator trust record")?;
+    #[cfg(windows)]
+    if toastlink_core::pairing::previous_binding_changed(&file)
+        .map_err(|_| "Cannot verify existing session bindings")?
+    {
+        return Err("Server identity changed. Enrollment blocked.".into());
+    }
     let eligible = Pairing::new(&file, &trust)
         .and_then(Pairing::preflight)
         .map_err(|e| format!("Preflight: {e:?}"))?;

@@ -89,6 +89,7 @@ pub struct ConnectionFile {
     wire: WireFile,
     digest: [u8; 32],
     server_origin: String,
+    ca_der_sha256: String,
 }
 
 impl fmt::Debug for ConnectionFile {
@@ -111,12 +112,13 @@ impl ConnectionFile {
             return Err(ImportError::TooLarge);
         }
         let wire: WireFile = serde_json::from_slice(bytes).map_err(|_| ImportError::InvalidJson)?;
-        let server_origin = validate(&wire)?;
+        let (server_origin, ca_der_sha256) = validate(&wire)?;
         let digest: [u8; 32] = Sha256::digest(bytes).into();
         Ok(Self {
             wire,
             digest,
             server_origin,
+            ca_der_sha256,
         })
     }
 
@@ -165,7 +167,8 @@ impl ConnectionFile {
             },
             "enrollment_id": self.wire.enrollment.id,
             "expires_at": self.wire.enrollment.expires_at,
-            "file_sha256": self.sha256_hex()
+            "file_sha256": self.sha256_hex(),
+            "ca_der_sha256": self.ca_der_sha256
         })
         .to_string()
     }
@@ -175,7 +178,7 @@ impl ConnectionFile {
     }
 }
 
-fn validate(wire: &WireFile) -> Result<String, ImportError> {
+fn validate(wire: &WireFile) -> Result<(String, String), ImportError> {
     if wire.format != CONNECTION_FORMAT || wire.version != CONNECTION_VERSION {
         return Err(ImportError::UnsupportedFormat);
     }
@@ -271,7 +274,7 @@ fn validate(wire: &WireFile) -> Result<String, ImportError> {
     if deadline <= Utc::now() {
         return Err(ImportError::Expired);
     }
-    Ok(server_origin)
+    Ok((server_origin, format!("{:x}", Sha256::digest(certs[0].as_ref()))))
 }
 
 #[cfg(test)]

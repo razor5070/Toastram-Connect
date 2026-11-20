@@ -87,3 +87,14 @@ This command checks the existing credential binding offline and does not redeem 
 C++ clients using cpp-httplib with OpenSSL can open the binding from
 include/toastlink_win_http.hpp and apply it to same-origin requests. The server
 enforces the credential's current scopes, expiry and revocation.
+
+### Desktop trust preview
+
+Run `toastlink inspect FILE` for an offline public identity preview. Compare the
+canonical origin, server ID and `ca_der_sha256` with the independent operator
+console. `file_sha256` identifies this individual enrollment file. Inspecting
+a file does not establish trust or contact its server. A desktop may pass a
+previously verified public tuple directly as a single JSON argument after
+`--verified-tuple` to the existing preflight or pair-dialog commands. The
+SDK validates that tuple against the current file before sending credentials.
+A changed prior Windows binding blocks enrollment.

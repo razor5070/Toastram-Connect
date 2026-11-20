@@ -44,15 +44,20 @@ with tempfile.TemporaryDirectory() as tmp:
     (root/"cert").write_bytes(cert.public_bytes(pem))
     (root/"key").write_bytes(key.private_bytes(pem,serialization.PrivateFormat.PKCS8,serialization.NoEncryption()))
     requests=[]
+    consumed=False
     good_grant=False
     client_id=str(uuid.uuid4())
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self,*args): pass
         def do_POST(self):
+            global consumed
             requests.append(self.path)
             assert self.headers["Authorization"]=="Bearer "+file["enrollment"]["token"]
             assert json.load(io.BytesIO(self.rfile.read(int(self.headers["Content-Length"]))))==expected
-            if self.path.endswith("/redeem"):
+            if consumed:
+                self.send_response(401); body=b'{"error":"enrollment_denied"}'
+            elif self.path.endswith("/redeem"):
+                consumed=good_grant
                 self.send_response(201)
                 body=json.dumps(dict(token_type="Bearer",access_token=secrets.token_urlsafe(32),
                     client_id=client_id, server_id=expected["server_id"], scopes=["read"],
@@ -78,6 +83,21 @@ with tempfile.TemporaryDirectory() as tmp:
         def run(mode, record, consent=""):
             (root/"trust").write_text(json.dumps(record))
             return subprocess.run([cli,mode,root/"file",root/"trust"],input=consent,text=True,capture_output=True,timeout=30,env={**os.environ,"LOCALAPPDATA":str(root)})
+        env={**os.environ,"LOCALAPPDATA":str(root)}
+        inspect=subprocess.run([cli,"inspect",root/"file"],env=env,text=True,capture_output=True,check=True)
+        preview=json.loads(inspect.stdout)
+        assert preview["ca_der_sha256"]==trust["ca_der_sha256"] and preview["file_sha256"]==expected["file_sha256"]
+        assert file["enrollment"]["token"] not in inspect.stdout and not requests
+        def inline(record):
+            return subprocess.run([cli,"preflight",root/"file","--verified-tuple",json.dumps(record)],env=env,text=True,capture_output=True,timeout=30)
+        for field,value in (("origin","https://other.invalid"),("server_id","1"*32),("ca_der_sha256","1"*64)):
+            assert inline(dict(trust,**{field:value})).returncode and not requests
+        # Correct trust tuple, wrong certificate presented by the TLS server.
+        other_ca=identity("Other disposable CA")[1]
+        bad_file=dict(file,tls={"ca_certificate_pem":other_ca.public_bytes(pem).decode()})
+        (root/"file").write_text(json.dumps(bad_file))
+        assert inline(dict(trust,ca_der_sha256=other_ca.fingerprint(hashes.SHA256()).hex())).returncode and not requests
+        (root/"file").write_bytes(raw)
         assert run("preflight",dict(trust,ca_der_sha256="0"*64)).returncode and not requests
         result=run("preflight",trust); assert result.returncode==0 and len(requests)==1, result.stderr
         assert run("pair",trust,"NO\n").returncode and len(requests)==2
@@ -92,6 +112,16 @@ with tempfile.TemporaryDirectory() as tmp:
         descriptor=root/"ToastRAM Connect"/"sessions"/(hashlib.sha256(origin.encode()).hexdigest()+".json")
         saved=json.loads(descriptor.read_bytes())
         assert saved==dict(version=1,origin=origin,locator=locator,ca_pem=file["tls"]["ca_certificate_pem"])
+        changed=dict(file,server=dict(file["server"],id="e"*32))
+        (root/"file").write_text(json.dumps(changed))
+        check=subprocess.run([cli,"inspect",root/"file"],env=env,text=True,capture_output=True,check=True)
+        assert json.loads(check.stdout)["previous_binding_changed"]
+        before=len(requests)
+        assert inline(dict(trust,server_id="e"*32)).returncode and len(requests)==before
+        (root/"file").write_bytes(raw)
+        replay=inline(trust)
+        assert replay.returncode and "Denied" in replay.stderr
+        assert requests[-1]=="/api/connect/v1/preflight"
         descriptor.unlink()
         file["enrollment"]["expires_at"]="2000-01-01T00:00:00Z"
         (root/"file").write_text(json.dumps(file))

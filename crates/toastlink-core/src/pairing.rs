@@ -247,3 +247,45 @@ pub fn resume_windows(bytes: &[u8], trust: Trust, client: &str) -> Result<(), Er
     );
     write_profile(&locator, &origin, pem)
 }
+
+/// Compare with descriptors written by earlier verified enrollments. A matching
+/// descriptor alone does not approve a new trust record.
+#[cfg(windows)]
+pub fn previous_binding_changed(file: &ConnectionFile) -> Result<bool, Error> {
+    let dir = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or(Error::Protocol)?)
+        .join("ToastRAM Connect")
+        .join("sessions");
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(_) => return Err(Error::Protocol),
+    };
+    for entry in entries {
+        let path = entry.map_err(|_| Error::Protocol)?.path();
+        if path.extension().and_then(|x| x.to_str()) != Some("json") {
+            continue;
+        }
+        let mut bytes = Vec::new();
+        File::open(path)
+            .and_then(|f| f.take(32769).read_to_end(&mut bytes))
+            .map_err(|_| Error::Protocol)?;
+        if bytes.len() > 32768 {
+            return Err(Error::Protocol);
+        }
+        let record: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|_| Error::Protocol)?;
+        let locator = record["locator"].as_str().ok_or(Error::Protocol)?;
+        let fields: Vec<_> = locator.split('|').collect();
+        if fields.len() != 4 || record["origin"].as_str() != Some(fields[0]) {
+            return Err(Error::Protocol);
+        }
+        if (file.server_origin == fields[0] || file.wire.server.id == fields[1])
+            && !(file.server_origin == fields[0]
+                && file.wire.server.id == fields[1]
+                && file.ca_der_sha256 == fields[3])
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
