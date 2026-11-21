@@ -156,8 +156,16 @@ mod tests {
         }
 
         for (format, expires_at, expected) in [
-            ("toastram.connection", "2020-01-01T00:00:00Z", TOASTLINK_EXPIRED),
-            ("unknown.format", "2099-01-01T00:00:00Z", TOASTLINK_UNSUPPORTED_FORMAT),
+            (
+                "toastram.connection",
+                "2020-01-01T00:00:00Z",
+                TOASTLINK_EXPIRED,
+            ),
+            (
+                "unknown.format",
+                "2099-01-01T00:00:00Z",
+                TOASTLINK_UNSUPPORTED_FORMAT,
+            ),
         ] {
             let bytes = file_bytes(format, expires_at);
             let mut handle = ptr::null_mut();
@@ -175,3 +183,5 @@ mod tests {
         unsafe { toastlink_free(ptr::null_mut()) };
     }
 }
+#[cfg(windows)]
+mod account;

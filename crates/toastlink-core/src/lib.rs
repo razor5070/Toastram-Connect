@@ -274,7 +274,10 @@ fn validate(wire: &WireFile) -> Result<(String, String), ImportError> {
     if deadline <= Utc::now() {
         return Err(ImportError::Expired);
     }
-    Ok((server_origin, format!("{:x}", Sha256::digest(certs[0].as_ref()))))
+    Ok((
+        server_origin,
+        format!("{:x}", Sha256::digest(certs[0].as_ref())),
+    ))
 }
 
 #[cfg(test)]
@@ -353,7 +356,8 @@ mod tests {
         ] {
             let mut value = fixture();
             value["server"]["url"] = json!(url);
-            let connection = ConnectionFile::from_bytes(&serde_json::to_vec(&value).unwrap()).unwrap();
+            let connection =
+                ConnectionFile::from_bytes(&serde_json::to_vec(&value).unwrap()).unwrap();
             assert_eq!(connection.server_url(), "https://memory.example.lan:18443");
             let metadata: Value = serde_json::from_str(&connection.public_metadata_json()).unwrap();
             assert_eq!(metadata["server"]["url"], connection.server_url());
@@ -431,4 +435,5 @@ mod tests {
         std::fs::remove_file(&temp).unwrap();
     }
 }
+pub mod account;
 pub mod pairing;
