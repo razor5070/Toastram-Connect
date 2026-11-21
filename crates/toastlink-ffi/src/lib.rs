@@ -183,5 +183,5 @@ mod tests {
         unsafe { toastlink_free(ptr::null_mut()) };
     }
 }
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 mod account;

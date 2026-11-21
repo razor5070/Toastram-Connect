@@ -26,3 +26,10 @@ jobs:
       - name: Lint
         if: matrix.os == 'ubuntu-latest'
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test disposable account and legacy TLS endpoints
+        if: matrix.os == 'windows-latest'
+        run: |
+          python -m pip install cryptography
+          python tests/disposable_tls.py target/release/toastlink.exe
+          python tests/account_tls.py target/release/toastlink_ffi.dll

@@ -163,14 +163,14 @@ impl State {
                 let tokens = grant.poll()?;
                 self.pending = None;
                 let session = self.client.accept(tokens)?;
-                let identity = json!(session.identity);
+                let identity = json!(session.identity());
                 self.session = Some(session);
                 return Ok(identity);
             }
             Op::Restore => {
                 self.session = None;
                 let session = self.client.restore()?;
-                let identity = json!(session.identity);
+                let identity = json!(session.identity());
                 self.session = Some(session);
                 return Ok(identity);
             }
@@ -187,9 +187,9 @@ impl State {
             Op::Identity => json!(s.me()?),
             Op::Disconnect => {
                 s.revoke()?;
+                self.client.forget_device(s.identity())?;
                 self.session = None;
                 self.pending = None;
-                self.client.forget_local()?;
                 Value::Null
             }
             Op::ListPersonas => json!(s.personas()?),
@@ -306,4 +306,51 @@ pub extern "C" fn toast_account_v2_release(handle: u64) -> i32 {
             .map(|_| ())
             .ok_or(Error::Protocol)
     })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn toast_account_v2_forget_local(data: *const u8, len: usize) -> i32 {
+    boundary(|| {
+        let arg: Open =
+            serde_json::from_slice(unsafe { input(data, len)? }).map_err(|_| Error::Protocol)?;
+        AccountClient::forget_offline(&arg.origin, arg.ca_pem.as_deref().map(str::as_bytes))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn bounded_inputs_and_owned_result_lifetime() {
+        let mut out = 17;
+        assert_eq!(
+            unsafe { toast_account_v2_open(std::ptr::null(), 0, &mut out) },
+            3
+        );
+        assert_eq!(out, 0);
+        let invalid = [0xff];
+        assert_eq!(
+            unsafe { toast_account_v2_open(invalid.as_ptr(), invalid.len(), &mut out) },
+            3
+        );
+        let handle = insert(Object::Bytes(b"ok".to_vec())).unwrap();
+        let mut len = 0;
+        let mut buf = [0; 2];
+        assert_eq!(
+            unsafe { toast_account_v2_copy(handle, buf.as_mut_ptr(), 1, &mut len) },
+            3
+        );
+        assert_eq!(len, 2);
+        assert_eq!(
+            unsafe { toast_account_v2_copy(handle, buf.as_mut_ptr(), 2, &mut len) },
+            0
+        );
+        assert_eq!(&buf, b"ok");
+        assert_eq!(toast_account_v2_release(handle), 0);
+        assert_eq!(
+            unsafe { toast_account_v2_copy(handle, buf.as_mut_ptr(), 2, &mut len) },
+            3
+        );
+        assert_eq!(len, 0);
+    }
 }

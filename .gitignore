@@ -6,3 +6,4 @@
 *.toastlink
 .env
 *.log
+__pycache__/

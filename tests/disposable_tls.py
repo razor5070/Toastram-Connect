@@ -5,7 +5,6 @@ import secrets
 import datetime as dt
 import hashlib
 import http.server
-import ipaddress
 import json
 import pathlib
 import ssl
@@ -14,10 +13,7 @@ import sys
 import tempfile
 import threading
 import uuid
-from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
 
 cli = pathlib.Path(sys.argv[1]).resolve()
 from tls_identity import identity, now, pem

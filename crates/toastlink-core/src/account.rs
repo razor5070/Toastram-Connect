@@ -39,6 +39,11 @@ fn origin(raw: &str) -> Result<String, Error> {
     Ok(canonical)
 }
 
+fn credential_binding(base: &str, ca_pem: Option<&[u8]>) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{base}|{:x}", Sha256::digest(ca_pem.unwrap_or_default()))
+}
+
 fn receive<T: DeserializeOwned>(request: RequestBuilder, expected: u16) -> Result<T, Error> {
     let response = request.send().map_err(|_| Error::Transport)?;
     let status = response.status().as_u16();
@@ -141,8 +146,7 @@ impl AccountClient {
             200,
         )?;
         config.validate(&base)?;
-        use sha2::{Digest, Sha256};
-        let binding = format!("{base}|{:x}", Sha256::digest(ca_pem.unwrap_or_default()));
+        let binding = credential_binding(&base, ca_pem);
         Ok(Self {
             client,
             config,
@@ -309,7 +313,7 @@ impl Drop for Stored {
 
 pub struct Session {
     client: AccountClient,
-    pub identity: Identity,
+    identity: Identity,
     access: Zeroizing<String>,
     expires: Instant,
 }
@@ -337,8 +341,8 @@ impl AccountClient {
     }
 }
 
-#[cfg(windows)]
-mod windows_store {
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+mod platform_store {
     use super::*;
     use sha2::{Digest, Sha256};
     use std::fs::{File, OpenOptions};
@@ -346,13 +350,25 @@ mod windows_store {
         entry: keyring::Entry,
         _lock: File,
     }
-    impl AccountClient {
-        fn vault(&self) -> Result<Vault, Error> {
-            let id = format!("{:x}", Sha256::digest(self.binding.as_bytes()));
-            let dir =
-                std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or(Error::Storage)?)
-                    .join("ToastRAMConnect")
-                    .join("account-locks");
+    impl Vault {
+        fn open(binding: &str) -> Result<Self, Error> {
+            let id = format!("{:x}", Sha256::digest(binding.as_bytes()));
+            #[cfg(windows)]
+            let root = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from);
+            #[cfg(target_os = "macos")]
+            let root = std::env::var_os("HOME")
+                .map(|p| std::path::PathBuf::from(p).join("Library/Application Support"));
+            #[cfg(target_os = "linux")]
+            let root = std::env::var_os("XDG_DATA_HOME")
+                .map(std::path::PathBuf::from)
+                .or_else(|| {
+                    std::env::var_os("HOME")
+                        .map(|p| std::path::PathBuf::from(p).join(".local/share"))
+                });
+            let dir = root
+                .ok_or(Error::Storage)?
+                .join("ToastRAMConnect")
+                .join("account-locks");
             std::fs::create_dir_all(&dir).map_err(|_| Error::Storage)?;
             let file = OpenOptions::new()
                 .create(true)
@@ -367,6 +383,18 @@ mod windows_store {
                     .map_err(|_| Error::Storage)?,
                 _lock: file,
             })
+        }
+    }
+    impl AccountClient {
+        fn vault(&self) -> Result<Vault, Error> {
+            Vault::open(&self.binding)
+        }
+        pub fn forget_offline(server: &str, ca_pem: Option<&[u8]>) -> Result<(), Error> {
+            let binding = credential_binding(&origin(server)?, ca_pem);
+            match Vault::open(&binding)?.entry.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+                Err(_) => Err(Error::Storage),
+            }
         }
         fn persist(&self, v: &Vault, identity: &Identity, tokens: &Tokens) -> Result<(), Error> {
             let record = Stored {
@@ -436,6 +464,28 @@ mod windows_store {
             self.persist(&v, &identity, &tokens)?;
             Ok(self.session(identity, &tokens))
         }
+        pub fn forget_device(&self, identity: &Identity) -> Result<(), Error> {
+            let vault = self.vault()?;
+            let data = match vault.entry.get_password() {
+                Ok(s) => Zeroizing::new(s),
+                Err(keyring::Error::NoEntry) => return Ok(()),
+                Err(_) => return Err(Error::Storage),
+            };
+            if *data == "rotating" {
+                return Ok(());
+            }
+            let record: Stored = serde_json::from_str(&data).map_err(|_| Error::Storage)?;
+            if record.device_id == identity.device_id
+                && record.account_id == identity.account_id
+                && record.issuer == self.binding
+            {
+                vault
+                    .entry
+                    .delete_credential()
+                    .map_err(|_| Error::Storage)?;
+            }
+            Ok(())
+        }
         pub fn forget_local(&self) -> Result<(), Error> {
             match self.vault()?.entry.delete_credential() {
                 Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
@@ -455,7 +505,7 @@ mod windows_store {
         }
     }
 }
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 impl Session {
     fn ready(&mut self) -> Result<(), Error> {
         Err(Error::Storage)
@@ -511,7 +561,7 @@ impl Session {
         };
         let result = receive(req.bearer_auth(&*self.access), status);
         if matches!(result, Err(Error::LoginRequired)) {
-            self.access.clear();
+            zeroize::Zeroize::zeroize(&mut *self.access);
         }
         result
     }
@@ -664,18 +714,21 @@ impl Session {
         if !revoked.revoked {
             return Err(Error::Protocol);
         }
-        self.access.clear();
+        zeroize::Zeroize::zeroize(&mut *self.access);
         Ok(())
     }
 }
 
 impl Session {
+    pub fn identity(&self) -> &Identity {
+        &self.identity
+    }
     pub fn me(&mut self) -> Result<Identity, Error> {
         let found: Identity = self.api("me", None, 200)?;
         if found.account_id != self.identity.account_id
             || found.device_id != self.identity.device_id
         {
-            self.access.clear();
+            zeroize::Zeroize::zeroize(&mut *self.access);
             return Err(Error::LoginRequired);
         }
         Ok(found)
