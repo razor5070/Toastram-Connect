@@ -692,6 +692,22 @@ impl Session {
             json!({"persona_id":persona,"memory_id":memory}),
         )
     }
+    pub fn restore_last_memory(
+        &mut self,
+        persona: uuid::Uuid,
+    ) -> Result<Option<uuid::Uuid>, Error> {
+        #[derive(Deserialize)]
+        struct Restored {
+            memory_id: Option<uuid::Uuid>,
+        }
+        let result: Restored = self.api(
+            "memories/restore-last",
+            Some(json!({"persona_id":persona})),
+            200,
+        )?;
+        Ok(result.memory_id)
+    }
+
     pub fn prepare(
         &mut self,
         persona: Option<uuid::Uuid>,
