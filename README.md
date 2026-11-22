@@ -88,6 +88,21 @@ C++ clients using cpp-httplib with OpenSSL can open the binding from
 include/toastlink_win_http.hpp and apply it to same-origin requests. The server
 enforces the credential's current scopes, expiry and revocation.
 
+### Memory provenance response compatibility
+
+`toastlink_win_http::Binding::Apply` configures authenticated HTTPS
+requests (CA trust, origin checks and bearer credentials) using cpp-httplib;
+it does **not** parse, filter, reconstruct, or serialize the JSON response.
+Consequently, the optional `retrieved_memories` array added to ToastRAM
+`POST /v1/auth/prepare` is preserved in the response body that the host
+application receives. The existing `messages`, `persona_id`, and
+`memory_count` fields remain unchanged.
+
+The Sona integration is responsible for parsing the optional field and must
+display it only when the corresponding injected memory block remains in the
+final model prompt after context budgeting. This SDK does not make claims
+about memory usage or source verification.
+
 ### Desktop trust preview
 
 Run `toastlink inspect FILE` for an offline public identity preview. Compare the
