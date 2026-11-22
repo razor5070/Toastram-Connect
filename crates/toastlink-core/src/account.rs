@@ -493,7 +493,25 @@ mod platform_store {
             }
         }
     }
-    impl Session {
+    /// Keep omitted origin fields absent, so legacy writes retain their wire format.
+fn memory_save_request(
+    persona: uuid::Uuid,
+    content: &str,
+    weight: f64,
+    origin_kind: Option<&str>,
+    origin_ref: Option<&str>,
+) -> serde_json::Value {
+    let mut request = json!({"persona_id":persona,"content":content,"weight":weight});
+    if let Some(kind) = origin_kind {
+        request["origin_kind"] = json!(kind);
+    }
+    if let Some(reference) = origin_ref {
+        request["origin_ref"] = json!(reference);
+    }
+    request
+}
+
+impl Session {
         pub(super) fn ready(&mut self) -> Result<(), Error> {
             if self.access.is_empty() {
                 return Err(Error::LoginRequired);
@@ -676,6 +694,16 @@ impl Session {
         content: &str,
         weight: f64,
     ) -> Result<uuid::Uuid, Error> {
+        self.save_memory_with_origin(persona, content, weight, None, None)
+    }
+    pub fn save_memory_with_origin(
+        &mut self,
+        persona: uuid::Uuid,
+        content: &str,
+        weight: f64,
+        origin_kind: Option<&str>,
+        origin_ref: Option<&str>,
+    ) -> Result<uuid::Uuid, Error> {
         #[derive(Deserialize)]
         struct Saved {
             saved: bool,
@@ -683,7 +711,7 @@ impl Session {
         }
         let saved: Saved = self.api(
             "memories/save",
-            Some(json!({"persona_id":persona,"content":content,"weight":weight})),
+            Some(memory_save_request(persona, content, weight, origin_kind, origin_ref)),
             201,
         )?;
         if !saved.saved {
@@ -779,6 +807,24 @@ impl Session {
 #[cfg(test)]
 mod account_tests {
     use super::*;
+    #[test]
+    fn save_memory_request_forwards_optional_provenance() {
+        let persona = uuid::Uuid::new_v4();
+        let legacy = memory_save_request(persona, "memory", 0.5, None, None);
+        assert_eq!(legacy, json!({"persona_id":persona,"content":"memory","weight":0.5}));
+        assert!(legacy.get("origin_kind").is_none());
+        assert!(legacy.get("origin_ref").is_none());
+        let supplied = memory_save_request(persona, "memory", 0.5,
+                                            Some("assistant_saved"), Some("turn:123"));
+        assert_eq!(supplied, json!({
+            "persona_id":persona,"content":"memory","weight":0.5,
+            "origin_kind":"assistant_saved","origin_ref":"turn:123"
+        }));
+        let partial = memory_save_request(persona, "memory", 0.5,
+                                          Some("user_saved"), None);
+        assert_eq!(partial.get("origin_kind"), Some(&json!("user_saved")));
+        assert!(partial.get("origin_ref").is_none());
+    }
     #[test]
     fn only_canonical_https_origins() {
         for value in [
