@@ -103,6 +103,23 @@ display it only when the corresponding injected memory block remains in the
 final model prompt after context budgeting. This SDK does not make claims
 about memory usage or source verification.
 
+### Restore the last non-relevant memory
+
+The existing account FFI entry point `toast_account_v2_call` accepts:
+
+```json
+{"op":"restore_last_memory","persona_id":"00000000-0000-4000-8000-000000000001"}
+```
+
+The SDK uses the authenticated account session to POST
+`/v1/auth/memories/restore-last` to the verified ToastRAM origin.
+It returns result JSON as `{"memory_id":"<uuid>"}` or
+`{"memory_id":null}` if there is nothing to restore.
+Only a `MEM_NON` record from that account/persona is eligible;
+`MEM_STALE` remains excluded.
+This is the operation used by Sona's `/memrestore` command.
+Deploy the updated server before using the new SDK command.
+
 ### Desktop trust preview
 
 Run `toastlink inspect FILE` for an offline public identity preview. Compare the
