@@ -103,6 +103,22 @@ display it only when the corresponding injected memory block remains in the
 final model prompt after context budgeting. This SDK does not make claims
 about memory usage or source verification.
 
+### SDK protocol hardening (development)
+
+Restore responses require an explicit `memory_id` member: a UUID indicates
+a restored memory and JSON `null` means the queue is empty. Missing keys
+or malformed UUIDs are protocol errors and must **not** be interpreted as
+a successful empty restore.
+
+The typed `Prepared` response now preserves the optional
+`retrieved_memories` array across the account FFI JSON boundary, including
+its exact row order and metadata (`id`, `created_at`, `retrieval_score`,
+`retrieval_method`, and optional `origin_kind`/`origin_ref`).
+An older server's omitted field remains omitted; an explicit empty array
+remains an empty array. No memory bodies are duplicated into provenance.
+The client is responsible for dropping provenance if context budgeting
+drops the corresponding injected memory block.
+
 ### Restore the last non-relevant memory
 
 The existing account FFI entry point `toast_account_v2_call` accepts:
