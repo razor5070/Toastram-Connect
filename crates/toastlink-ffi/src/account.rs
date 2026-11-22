@@ -132,6 +132,8 @@ enum Op {
         persona_id: Uuid,
         content: String,
         weight: f64,
+        origin_kind: Option<String>,
+        origin_ref: Option<String>,
     },
     Search {
         persona_id: Uuid,
@@ -217,7 +219,12 @@ impl State {
                 persona_id,
                 content,
                 weight,
-            } => json!(s.save_memory(persona_id, &content, weight)?),
+                origin_kind,
+                origin_ref,
+            } => json!(s.save_memory_with_origin(
+                persona_id, &content, weight,
+                origin_kind.as_deref(), origin_ref.as_deref()
+            )?),
             Op::Search {
                 persona_id,
                 query,
@@ -326,6 +333,36 @@ pub unsafe extern "C" fn toast_account_v2_forget_local(data: *const u8, len: usi
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn save_memory_accepts_supplied_and_omitted_origin_fields() {
+        let persona = Uuid::new_v4();
+        let legacy = json!({
+            "op":"save_memory", "persona_id":persona,
+            "content":"hello", "weight":0.5
+        });
+        assert!(matches!(
+            serde_json::from_value::<Op>(legacy),
+            Ok(Op::SaveMemory { persona_id, origin_kind: None, origin_ref: None, .. })
+                if persona_id == persona
+        ));
+        let annotated = json!({
+            "op":"save_memory", "persona_id":persona,
+            "content":"hello", "weight":0.5,
+            "origin_kind":"user_saved", "origin_ref":"turn:123"
+        });
+        assert!(matches!(
+            serde_json::from_value::<Op>(annotated),
+            Ok(Op::SaveMemory { origin_kind: Some(kind), origin_ref: Some(reference), .. })
+                if kind == "user_saved" && reference == "turn:123"
+        ));
+        let with_extra = json!({
+            "op":"save_memory", "persona_id":persona,
+            "content":"hello", "weight":0.5,
+            "origin_kind":"assistant_saved", "unexpected":"value"
+        });
+        assert!(serde_json::from_value::<Op>(with_extra).is_err());
+    }
+
     #[test]
     fn restore_last_memory_operation_parses_and_rejects_extra_fields() {
         let persona = Uuid::new_v4();
