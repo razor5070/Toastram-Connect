@@ -182,6 +182,13 @@ class Server(http.server.BaseHTTPRequestHandler):
             if "/memories/" in self.path:
                 return self.send(400, {"error": "invalid_query_or_persona"})
             return self.send(404, {"error": "persona_not_found"})
+        if self.path.endswith("/evidence/store") or self.path.endswith("/evidence/load"):
+            key = ("answer_evidence", state["account"], data["persona_id"],
+                   data["answer_id"], data["revision"])
+            if self.path.endswith("/store"):
+                existing = rows.setdefault(key, data["evidence"])
+                return self.send(200, {"stored": existing == data["evidence"]})
+            return self.send(200, {"evidence": rows.get(key)})
         if self.path.endswith("/activate"):
             return self.send(200, {"persona": dict(persona, active=True)})
         if self.path.endswith("/update"):
@@ -323,6 +330,13 @@ with tempfile.TemporaryDirectory() as tmp:
             confirm="DELETE",
         )
         assert operation(client, "active_persona") == persona
+        answer = uid()
+        key = dict(persona_id=persona["id"], answer_id=answer, revision=1)
+        evidence = {"answer_id": answer, "revision": 1, "sources": []}
+        assert operation(client, "store_evidence", evidence=evidence, **key) == {"stored": True}
+        assert operation(client, "load_evidence", **key) == {"evidence": evidence}
+        assert operation(client, "load_evidence", **dict(key, revision=2)) == {"evidence": None}
+
         assert (
             operation(
                 client, "save_memory", persona_id=persona["id"], content="m", weight=0.5

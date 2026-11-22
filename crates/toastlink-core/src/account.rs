@@ -563,6 +563,8 @@ pub struct Prepared {
     pub messages: Vec<serde_json::Value>,
     pub persona_id: Option<uuid::Uuid>,
     pub memory_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persona_revision: Option<u32>,
     // Old servers omit this; new servers return an array, including [].
     // Preserve the difference when crossing the JSON FFI boundary.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -762,6 +764,27 @@ impl Session {
         Ok(result.memory_id)
     }
 
+    pub fn store_evidence(
+        &mut self,
+        persona: uuid::Uuid,
+        answer: uuid::Uuid,
+        revision: u32,
+        evidence: &serde_json::Value,
+    ) -> Result<serde_json::Value, Error> {
+        self.api("evidence/store", Some(json!({"persona_id": persona, "answer_id": answer, "revision": revision, "evidence": evidence})), 200)
+    }
+    pub fn load_evidence(
+        &mut self,
+        persona: uuid::Uuid,
+        answer: uuid::Uuid,
+        revision: u32,
+    ) -> Result<serde_json::Value, Error> {
+        self.api(
+            "evidence/load",
+            Some(json!({"persona_id": persona, "answer_id": answer, "revision": revision})),
+            200,
+        )
+    }
     pub fn prepare(
         &mut self,
         persona: Option<uuid::Uuid>,

@@ -147,6 +147,17 @@ enum Op {
     RestoreLastMemory {
         persona_id: Uuid,
     },
+    StoreEvidence {
+        persona_id: Uuid,
+        answer_id: Uuid,
+        revision: u32,
+        evidence: Value,
+    },
+    LoadEvidence {
+        persona_id: Uuid,
+        answer_id: Uuid,
+        revision: u32,
+    },
     Prepare {
         persona_id: Option<Uuid>,
         messages: Vec<Value>,
@@ -237,6 +248,17 @@ impl State {
             Op::RestoreLastMemory { persona_id } => {
                 json!({"memory_id":s.restore_last_memory(persona_id)?})
             }
+            Op::StoreEvidence {
+                persona_id,
+                answer_id,
+                revision,
+                evidence,
+            } => s.store_evidence(persona_id, answer_id, revision, &evidence)?,
+            Op::LoadEvidence {
+                persona_id,
+                answer_id,
+                revision,
+            } => s.load_evidence(persona_id, answer_id, revision)?,
             Op::Prepare {
                 persona_id,
                 messages,
