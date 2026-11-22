@@ -327,6 +327,22 @@ pub unsafe extern "C" fn toast_account_v2_forget_local(data: *const u8, len: usi
 mod tests {
     use super::*;
     #[test]
+    fn restore_last_memory_operation_parses_and_rejects_extra_fields() {
+        let persona = Uuid::new_v4();
+        let operation = serde_json::json!({
+            "op":"restore_last_memory", "persona_id":persona
+        });
+        assert!(matches!(
+            serde_json::from_value::<Op>(operation),
+            Ok(Op::RestoreLastMemory { persona_id }) if persona_id == persona
+        ));
+        let extra = serde_json::json!({
+            "op":"restore_last_memory", "persona_id":persona, "account_id":"untrusted"
+        });
+        assert!(serde_json::from_value::<Op>(extra).is_err());
+    }
+
+    #[test]
     fn bounded_inputs_and_owned_result_lifetime() {
         let mut out = 17;
         assert_eq!(
