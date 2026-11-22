@@ -493,25 +493,7 @@ mod platform_store {
             }
         }
     }
-    /// Keep omitted origin fields absent, so legacy writes retain their wire format.
-fn memory_save_request(
-    persona: uuid::Uuid,
-    content: &str,
-    weight: f64,
-    origin_kind: Option<&str>,
-    origin_ref: Option<&str>,
-) -> serde_json::Value {
-    let mut request = json!({"persona_id":persona,"content":content,"weight":weight});
-    if let Some(kind) = origin_kind {
-        request["origin_kind"] = json!(kind);
-    }
-    if let Some(reference) = origin_ref {
-        request["origin_ref"] = json!(reference);
-    }
-    request
-}
-
-impl Session {
+    impl Session {
         pub(super) fn ready(&mut self) -> Result<(), Error> {
             if self.access.is_empty() {
                 return Err(Error::LoginRequired);
@@ -558,6 +540,24 @@ pub struct RetrievedMemory {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin_ref: Option<String>,
 }
+/// Keep omitted origin fields absent, so legacy writes retain their wire format.
+fn memory_save_request(
+    persona: uuid::Uuid,
+    content: &str,
+    weight: f64,
+    origin_kind: Option<&str>,
+    origin_ref: Option<&str>,
+) -> serde_json::Value {
+    let mut request = json!({"persona_id":persona,"content":content,"weight":weight});
+    if let Some(kind) = origin_kind {
+        request["origin_kind"] = json!(kind);
+    }
+    if let Some(reference) = origin_ref {
+        request["origin_ref"] = json!(reference);
+    }
+    request
+}
+
 #[derive(serde::Serialize, Deserialize)]
 pub struct Prepared {
     pub messages: Vec<serde_json::Value>,
