@@ -142,6 +142,9 @@ enum Op {
         persona_id: Uuid,
         memory_id: Uuid,
     },
+    RestoreLastMemory {
+        persona_id: Uuid,
+    },
     Prepare {
         persona_id: Option<Uuid>,
         messages: Vec<Value>,
@@ -224,6 +227,9 @@ impl State {
                 persona_id,
                 memory_id,
             } => json!(s.delete_memory(persona_id, memory_id)?),
+            Op::RestoreLastMemory { persona_id } => {
+                json!({"memory_id":s.restore_last_memory(persona_id)?})
+            }
             Op::Prepare {
                 persona_id,
                 messages,
