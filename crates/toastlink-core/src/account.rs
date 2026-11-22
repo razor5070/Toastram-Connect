@@ -530,10 +530,40 @@ pub struct Memory {
     pub score: f64,
 }
 #[derive(serde::Serialize, Deserialize)]
+pub struct RetrievedMemory {
+    pub id: uuid::Uuid,
+    pub created_at: String,
+    pub retrieval_score: f64,
+    pub retrieval_method: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin_ref: Option<String>,
+}
+#[derive(serde::Serialize, Deserialize)]
 pub struct Prepared {
     pub messages: Vec<serde_json::Value>,
     pub persona_id: Option<uuid::Uuid>,
     pub memory_count: usize,
+    // Old servers omit this; new servers return an array, including [].
+    // Preserve the difference when crossing the JSON FFI boundary.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retrieved_memories: Option<Vec<RetrievedMemory>>,
+}
+
+#[derive(Deserialize)]
+struct RestoredMemory {
+    // serde normally treats missing Option<T> as None. That would mistake an
+    // invalid {} response for an explicitly empty restore queue.
+    #[serde(deserialize_with = "deserialize_required_memory_id")]
+    memory_id: Option<uuid::Uuid>,
+}
+
+fn deserialize_required_memory_id<'de, D>(deserializer: D) -> Result<Option<uuid::Uuid>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<uuid::Uuid>::deserialize(deserializer)
 }
 #[derive(Deserialize)]
 struct OnePersona {
@@ -696,11 +726,7 @@ impl Session {
         &mut self,
         persona: uuid::Uuid,
     ) -> Result<Option<uuid::Uuid>, Error> {
-        #[derive(Deserialize)]
-        struct Restored {
-            memory_id: Option<uuid::Uuid>,
-        }
-        let result: Restored = self.api(
+        let result: RestoredMemory = self.api(
             "memories/restore-last",
             Some(json!({"persona_id":persona})),
             200,
@@ -771,6 +797,62 @@ mod account_tests {
             "https://example.com:444"
         );
     }
+    #[test]
+    fn restore_memory_response_requires_explicit_id_or_null() {
+        let id = uuid::Uuid::new_v4();
+        let found: RestoredMemory = serde_json::from_value(json!({"memory_id": id})).unwrap();
+        assert_eq!(found.memory_id, Some(id));
+        let empty: RestoredMemory = serde_json::from_value(json!({"memory_id": null})).unwrap();
+        assert!(empty.memory_id.is_none());
+        for invalid in [
+            json!({}),
+            json!({"memory_id": "not-a-uuid"}),
+            json!({"memory_id": 7}),
+            json!({"memory_id": false}),
+        ] {
+            assert!(serde_json::from_value::<RestoredMemory>(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn prepared_provenance_survives_typed_roundtrip_and_legacy_omission() {
+        let persona = uuid::Uuid::new_v4();
+        let memory = uuid::Uuid::new_v4();
+        let input = json!({
+            "messages": [{"role":"system","content":"untrusted references"}],
+            "persona_id":persona,
+            "memory_count":1,
+            "retrieved_memories":[{
+                "id":memory,
+                "created_at":"2026-11-22T00:00:00Z",
+                "retrieval_score":0.25,
+                "retrieval_method":"postgresql_ts_rank_cd",
+                "origin_kind":"assistant_saved",
+                "origin_ref":"turn:123"
+            }]
+        });
+        let parsed: Prepared = serde_json::from_value(input.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), input);
+        let no_origin = json!({
+            "messages":[], "persona_id":persona, "memory_count":1,
+            "retrieved_memories":[{
+                "id":memory, "created_at":"2026-11-22T00:00:00Z",
+                "retrieval_score":0.1, "retrieval_method":"postgresql_ts_rank_cd"
+            }]
+        });
+        let parsed: Prepared = serde_json::from_value(no_origin.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), no_origin);
+        let empty = json!({
+            "messages":[], "persona_id":null,
+            "memory_count":0, "retrieved_memories":[]
+        });
+        let parsed: Prepared = serde_json::from_value(empty.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), empty);
+        let old = json!({"messages":[], "persona_id":null, "memory_count":0});
+        let parsed: Prepared = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), old);
+    }
+
     #[test]
     fn established_empty_persona_with_optional_status() {
         let value =
