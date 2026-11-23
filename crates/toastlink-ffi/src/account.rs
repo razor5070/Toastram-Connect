@@ -163,6 +163,7 @@ enum Op {
         messages: Vec<Value>,
         memory_query: String,
         memory_limit: u8,
+        retrieval_mode: Option<String>,
     },
 }
 impl State {
@@ -264,7 +265,10 @@ impl State {
                 messages,
                 memory_query,
                 memory_limit,
-            } => json!(s.prepare(persona_id, &messages, &memory_query, memory_limit)?),
+                retrieval_mode,
+            } => json!(s.prepare_with_retrieval_mode(
+                persona_id, &messages, &memory_query, memory_limit, retrieval_mode.as_deref()
+            )?),
             _ => return Err(Error::Protocol),
         })
     }
@@ -355,6 +359,24 @@ pub unsafe extern "C" fn toast_account_v2_forget_local(data: *const u8, len: usi
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn prepare_preserves_legacy_requests_and_accepts_hybrid_mode() {
+        let mut request = json!({
+            "op": "prepare", "persona_id": null,
+            "messages": [], "memory_query": "topic", "memory_limit": 20
+        });
+        assert!(matches!(
+            serde_json::from_value::<Op>(request.clone()),
+            Ok(Op::Prepare { memory_limit: 20, retrieval_mode: None, .. })
+        ));
+        request["retrieval_mode"] = json!("semantic_hybrid");
+        assert!(matches!(
+            serde_json::from_value::<Op>(request),
+            Ok(Op::Prepare { memory_limit: 20, retrieval_mode: Some(mode), .. })
+                if mode == "semantic_hybrid"
+        ));
+    }
+
     #[test]
     fn save_memory_accepts_supplied_and_omitted_origin_fields() {
         let persona = Uuid::new_v4();

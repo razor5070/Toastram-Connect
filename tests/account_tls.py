@@ -163,6 +163,14 @@ class Server(http.server.BaseHTTPRequestHandler):
             state["revoked"] = True
             return self.send(200, {"revoked": True})
         if self.path.endswith("/prepare"):
+            if data["memory_limit"]:
+                assert data["memory_limit"] == 20
+                if data["memory_query"] == "classic fixture":
+                    assert "retrieval_mode" not in data
+                else:
+                    assert data["retrieval_mode"] == "semantic_hybrid"
+            else:
+                assert "retrieval_mode" not in data
             items = data["messages"] or [{"role": "system", "content": "{[persona]}"}]
             messages = [
                 dict(item, content="server prepared")
@@ -371,6 +379,13 @@ with tempfile.TemporaryDirectory() as tmp:
             )["messages"][0]["content"]
             == "server prepared"
         )
+        for query, extra in (
+            ("classic fixture", {}),
+            ("hybrid fixture", {"retrieval_mode": "semantic_hybrid"}),
+        ):
+            prepared = operation(client, "prepare", persona_id=persona["id"],
+                                 messages=[], memory_query=query, memory_limit=20, **extra)
+            assert prepared["messages"][0]["content"] == "server prepared"
         # Another issuer (even with the same CA) cannot restore this device.
         old_origin = origin
         other = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Server)

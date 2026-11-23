@@ -792,7 +792,24 @@ impl Session {
         query: &str,
         limit: u8,
     ) -> Result<Prepared, Error> {
-        self.api("prepare",Some(json!({"persona_id":persona,"messages":messages,"memory_query":query,"memory_limit":limit})),200)
+        self.prepare_with_retrieval_mode(persona, messages, query, limit, None)
+    }
+    pub fn prepare_with_retrieval_mode(
+        &mut self,
+        persona: Option<uuid::Uuid>,
+        messages: &[serde_json::Value],
+        query: &str,
+        limit: u8,
+        retrieval_mode: Option<&str>,
+    ) -> Result<Prepared, Error> {
+        let mut request = json!({
+            "persona_id": persona, "messages": messages,
+            "memory_query": query, "memory_limit": limit,
+        });
+        if let Some(mode) = retrieval_mode {
+            request["retrieval_mode"] = json!(mode);
+        }
+        self.api("prepare", Some(request), 200)
     }
     pub fn revoke(&mut self) -> Result<(), Error> {
         #[derive(Deserialize)]
