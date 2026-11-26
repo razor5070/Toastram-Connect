@@ -254,8 +254,11 @@ impl State {
                 origin_kind,
                 origin_ref,
             } => json!(s.save_memory_with_origin(
-                persona_id, &content, weight,
-                origin_kind.as_deref(), origin_ref.as_deref()
+                persona_id,
+                &content,
+                weight,
+                origin_kind.as_deref(),
+                origin_ref.as_deref()
             )?),
             Op::Search {
                 persona_id,
@@ -287,7 +290,11 @@ impl State {
                 memory_limit,
                 retrieval_mode,
             } => json!(s.prepare_with_retrieval_mode(
-                persona_id, &messages, &memory_query, memory_limit, retrieval_mode.as_deref()
+                persona_id,
+                &messages,
+                &memory_query,
+                memory_limit,
+                retrieval_mode.as_deref()
             )?),
             _ => return Err(Error::Protocol),
         })
@@ -387,7 +394,11 @@ mod tests {
         });
         assert!(matches!(
             serde_json::from_value::<Op>(request.clone()),
-            Ok(Op::Prepare { memory_limit: 20, retrieval_mode: None, .. })
+            Ok(Op::Prepare {
+                memory_limit: 20,
+                retrieval_mode: None,
+                ..
+            })
         ));
         request["retrieval_mode"] = json!("semantic_hybrid");
         assert!(matches!(

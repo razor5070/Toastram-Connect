@@ -858,7 +858,13 @@ impl Session {
         }
         let saved: Saved = self.api(
             "memories/save",
-            Some(memory_save_request(persona, content, weight, origin_kind, origin_ref)),
+            Some(memory_save_request(
+                persona,
+                content,
+                weight,
+                origin_kind,
+                origin_ref,
+            )),
             201,
         )?;
         if !saved.saved {
@@ -996,17 +1002,27 @@ mod account_tests {
     fn save_memory_request_forwards_optional_provenance() {
         let persona = uuid::Uuid::new_v4();
         let legacy = memory_save_request(persona, "memory", 0.5, None, None);
-        assert_eq!(legacy, json!({"persona_id":persona,"content":"memory","weight":0.5}));
+        assert_eq!(
+            legacy,
+            json!({"persona_id":persona,"content":"memory","weight":0.5})
+        );
         assert!(legacy.get("origin_kind").is_none());
         assert!(legacy.get("origin_ref").is_none());
-        let supplied = memory_save_request(persona, "memory", 0.5,
-                                            Some("assistant_saved"), Some("turn:123"));
-        assert_eq!(supplied, json!({
-            "persona_id":persona,"content":"memory","weight":0.5,
-            "origin_kind":"assistant_saved","origin_ref":"turn:123"
-        }));
-        let partial = memory_save_request(persona, "memory", 0.5,
-                                          Some("user_saved"), None);
+        let supplied = memory_save_request(
+            persona,
+            "memory",
+            0.5,
+            Some("assistant_saved"),
+            Some("turn:123"),
+        );
+        assert_eq!(
+            supplied,
+            json!({
+                "persona_id":persona,"content":"memory","weight":0.5,
+                "origin_kind":"assistant_saved","origin_ref":"turn:123"
+            })
+        );
+        let partial = memory_save_request(persona, "memory", 0.5, Some("user_saved"), None);
         assert_eq!(partial.get("origin_kind"), Some(&json!("user_saved")));
         assert!(partial.get("origin_ref").is_none());
     }
