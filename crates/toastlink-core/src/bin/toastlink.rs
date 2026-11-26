@@ -1,8 +1,6 @@
-use std::{
-    fs::File,
-    io::{self, Read},
-    path::Path,
-};
+#[cfg(windows)]
+use std::io;
+use std::{fs::File, io::Read, path::Path};
 use toastlink_core::{
     pairing::{Pairing, Trust},
     ConnectionFile,
@@ -58,15 +56,17 @@ fn run() -> Result<(), String> {
     }
     if (args.len() == 2 || (args.len() == 4 && args[2] == "--output")) && args[0] == "inspect" {
         let file = ConnectionFile::from_path(Path::new(&args[1])).map_err(|e| e.to_string())?;
-        let mut preview: serde_json::Value =
+        let preview: serde_json::Value =
             serde_json::from_str(&file.public_metadata_json()).map_err(|_| "Invalid metadata")?;
         #[cfg(windows)]
-        {
+        let preview = {
+            let mut preview = preview;
             preview["previous_binding_changed"] = serde_json::Value::Bool(
                 toastlink_core::pairing::previous_binding_changed(&file)
                     .map_err(|_| "Cannot inspect existing session bindings")?,
             );
-        }
+            preview
+        };
         let metadata = preview.to_string();
         if args.len() == 4 {
             use std::io::Write;
@@ -113,7 +113,7 @@ fn run() -> Result<(), String> {
     {
         return Err("Server identity changed. Enrollment blocked.".into());
     }
-    let eligible = Pairing::new(&file, &trust)
+    let _eligible = Pairing::new(&file, &trust)
         .and_then(Pairing::preflight)
         .map_err(|e| format!("Preflight: {e:?}"))?;
     println!("Eligible at {}", file.server_url());
@@ -133,7 +133,7 @@ fn run() -> Result<(), String> {
             if !consent {
                 return Err("Pairing cancelled".into());
             }
-            let locator = eligible
+            let locator = _eligible
                 .redeem_windows()
                 .map_err(|e| format!("Redemption: {e:?}"))?;
             println!("Credential stored: {locator}");
