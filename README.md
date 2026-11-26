@@ -146,3 +146,31 @@ previously verified public tuple directly as a single JSON argument after
 `--verified-tuple` to the existing preflight or pair-dialog commands. The
 SDK validates that tuple against the current file before sending credentials.
 A changed prior Windows binding blocks enrollment.
+
+
+## Published persona visual retrieval (account ABI v2)
+
+Read-only operations use the already authenticated, issuer-bound device
+session with persona scope; no credentials or arbitrary URLs are passed to
+the host. They never call legacy bearer-fingerprint endpoints.
+
+```json
+{"op":"visuals","persona_id":"00000000-0000-4000-8000-000000000001"}
+```
+
+Returns the visual metadata object directly (revision, avatar, sprites,
+manifest, optional studio_review). A missing avatar is explicit null.
+Use the selected persona UUID, not a display name. Cache only verified
+assets scoped to the authenticated issuer, account and persona.
+
+```json
+{"op":"visual_asset","persona_id":"00000000-0000-4000-8000-000000000001","kind":"sprites","sha256":"<64 lowercase hex from metadata>","mime":"image/png"}
+```
+
+Returns sha256, mime, data_base64. Only avatar/sprites kinds are permitted.
+The SDK checks exact MIME, ETag, SHA-256, image signature and the existing
+2 MiB binary limit. The JSON result fits the desktop's 4 MiB FFI copy cap.
+A changed hash is a protocol failure: refresh metadata, never display
+mismatched bytes. The desktop must additionally decode pixels, validate
+frame bounds, reject stale persona/connection generations, and atomically
+swap matching visual sets. No visual writes or publication are exposed here.

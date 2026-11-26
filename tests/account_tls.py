@@ -1,6 +1,8 @@
 """Account SDK integration via its public Windows ABI. Disposable TLS and vault only."""
 
 import ctypes as c
+import base64
+import hashlib
 import http.server
 import json
 import pathlib
@@ -112,6 +114,20 @@ class Server(http.server.BaseHTTPRequestHandler):
             return self.send(200, {"persona": persona})
         if self.path.endswith("/personas/active"):
             return self.send(200, {"persona": persona})
+        visual_base="/v1/auth/personas/"+persona["id"]+"/visuals"
+        if self.path == visual_base:
+            return self.send(200, {"visuals":{"revision":1,
+                "avatar":{"sha256":visual_hash,"mime":"image/png"},
+                "sprites":None,"manifest":None}})
+        if self.path == visual_base+"/avatar":
+            body=visual_bytes+(b"changed" if state.get("bad_visual") else b"")
+            self.send_response(200)
+            self.send_header("Content-Type","image/png")
+            self.send_header("ETag",'"'+visual_hash+'"')
+            self.send_header("Content-Length",str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         return self.send(404, {"error": "persona_not_found"})
 
     def do_POST(self):
@@ -230,6 +246,8 @@ class Server(http.server.BaseHTTPRequestHandler):
 rows = {}
 device, memory, device_secret = uid(), uid(), token()
 persona = dict(id=uid(), name="", profile="", state="blank", revision=1)
+visual_bytes=base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+X2uoAAAAASUVORK5CYII=")
+visual_hash=hashlib.sha256(visual_bytes).hexdigest()
 state = dict(account=uid(), access=token(), refresh=token(), revoked=False, polls=0)
 with tempfile.TemporaryDirectory() as tmp:
     root = pathlib.Path(tmp)
@@ -304,6 +322,20 @@ with tempfile.TemporaryDirectory() as tmp:
         )
         assert operation(client, "list_personas") == [persona]
         assert operation(client, "persona", persona_id=persona["id"]) == persona
+        metadata=operation(client,"visuals",persona_id=persona["id"])
+        assert metadata["revision"]==1 and metadata["avatar"]["sha256"]==visual_hash
+        visual_args=dict(persona_id=persona["id"],kind="avatar",sha256=visual_hash,mime="image/png")
+        result=operation(client,"visual_asset",**visual_args)
+        assert base64.b64decode(result["data_base64"],validate=True)==visual_bytes
+        assert result["sha256"]==visual_hash and result["mime"]=="image/png"
+        operation(client,"visual_asset",3,**dict(visual_args,sha256="0"*64))
+        state["bad_visual"]=True
+        operation(client,"visual_asset",3,**visual_args)
+        state["bad_visual"]=False
+        operation(client,"visual_asset",12,**dict(visual_args,persona_id=uid()))
+        operation(client,"visuals",12,persona_id=uid())
+        operation(client,"visual_asset",3,**dict(visual_args,kind="../avatar"))
+        operation(client,"visual_asset",3,**dict(visual_args,mime="text/html"))
         assert operation(client, "blank", activate=True)["name"] == ""
         assert (
             operation(client, "generate", model="fixture", activate=True)["id"]

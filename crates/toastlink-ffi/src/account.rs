@@ -10,7 +10,8 @@ use std::{
     },
     time::Instant,
 };
-use toastlink_core::account::{AccountClient, Actor, DeviceGrant, Error, Session};
+use toastlink_core::account::{AccountClient, Actor, DeviceGrant, Error, Session, VisualKind};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use uuid::Uuid;
 
 struct State {
@@ -105,6 +106,15 @@ enum Op {
     ActivePersona,
     Persona {
         persona_id: Uuid,
+    },
+    Visuals {
+        persona_id: Uuid,
+    },
+    VisualAsset {
+        persona_id: Uuid,
+        kind: VisualKind,
+        sha256: String,
+        mime: String,
     },
     Blank {
         activate: bool,
@@ -212,6 +222,11 @@ impl State {
             Op::ListPersonas => json!(s.personas()?),
             Op::ActivePersona => json!(s.active_persona()?),
             Op::Persona { persona_id } => json!(s.persona(persona_id)?),
+            Op::Visuals { persona_id } => json!(s.visuals(persona_id)?),
+            Op::VisualAsset { persona_id, kind, sha256, mime } => {
+                let bytes = s.visual_asset(persona_id, kind, &sha256, &mime)?;
+                json!({"sha256":sha256,"mime":mime,"data_base64":STANDARD.encode(bytes)})
+            }
             Op::Blank { activate } => json!(s.blank(activate)?),
             Op::Generate { model, activate } => json!(s.generate(&model, activate)?),
             Op::Activate { persona_id } => json!(s.activate(persona_id)?),
