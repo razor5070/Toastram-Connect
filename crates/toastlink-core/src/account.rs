@@ -515,7 +515,10 @@ impl Session {
 const MAX_VISUAL_BYTES: usize = 2 * 1024 * 1024;
 
 fn visual_hash(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 #[derive(serde::Serialize, Deserialize)]
@@ -682,13 +685,21 @@ impl Session {
         struct Envelope {
             visuals: Visuals,
         }
-        let response = self.api::<Envelope>(&format!("personas/{id}/visuals"), None, 200)?.visuals;
+        let response = self
+            .api::<Envelope>(&format!("personas/{id}/visuals"), None, 200)?
+            .visuals;
         if response.avatar.as_ref().is_some_and(|a| !a.valid())
             || response.sprites.as_ref().is_some_and(|a| !a.valid())
             || response.sprites.is_some() != response.manifest.is_some()
             || response.manifest.as_ref().is_some_and(|m| !m.is_object())
-            || response.studio_review.as_ref().is_some_and(|m| !m.is_object())
-            || (response.revision == 0 && (response.avatar.is_some() || response.sprites.is_some() || response.studio_review.is_some()))
+            || response
+                .studio_review
+                .as_ref()
+                .is_some_and(|m| !m.is_object())
+            || (response.revision == 0
+                && (response.avatar.is_some()
+                    || response.sprites.is_some()
+                    || response.studio_review.is_some()))
         {
             return Err(Error::Protocol);
         }
@@ -698,16 +709,29 @@ impl Session {
     /// Fetch only the bytes pinned by the caller's previously observed metadata.
     /// Redirects are disabled by the existing AccountClient. No bearer is exposed.
     pub fn visual_asset(
-        &mut self, id: uuid::Uuid, kind: VisualKind, sha256: &str, mime: &str,
+        &mut self,
+        id: uuid::Uuid,
+        kind: VisualKind,
+        sha256: &str,
+        mime: &str,
     ) -> Result<Vec<u8>, Error> {
         use sha2::{Digest, Sha256};
         if !visual_hash(sha256) || !matches!(mime, "image/png" | "image/webp") {
             return Err(Error::Protocol);
         }
         self.ready()?;
-        let url = format!("{}/v1/auth/personas/{id}/visuals/{}", self.client.issuer(), kind.path());
-        let response = self.client.client.get(url).bearer_auth(&*self.access)
-            .send().map_err(|_| Error::Transport)?;
+        let url = format!(
+            "{}/v1/auth/personas/{id}/visuals/{}",
+            self.client.issuer(),
+            kind.path()
+        );
+        let response = self
+            .client
+            .client
+            .get(url)
+            .bearer_auth(&*self.access)
+            .send()
+            .map_err(|_| Error::Transport)?;
         match response.status().as_u16() {
             200 => (),
             401 => {
@@ -718,20 +742,35 @@ impl Session {
             status => return Err(Error::Rejected(status)),
         }
         let etag = format!("\"{sha256}\"");
-        if response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()) != Some(mime)
-            || response.headers().get(reqwest::header::ETAG).and_then(|v| v.to_str().ok()) != Some(etag.as_str())
-            || response.content_length().is_some_and(|n| n > MAX_VISUAL_BYTES as u64)
+        if response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            != Some(mime)
+            || response
+                .headers()
+                .get(reqwest::header::ETAG)
+                .and_then(|v| v.to_str().ok())
+                != Some(etag.as_str())
+            || response
+                .content_length()
+                .is_some_and(|n| n > MAX_VISUAL_BYTES as u64)
         {
             return Err(Error::Protocol);
         }
         let mut bytes = Vec::new();
-        response.take((MAX_VISUAL_BYTES + 1) as u64).read_to_end(&mut bytes)
+        response
+            .take((MAX_VISUAL_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
             .map_err(|_| Error::Transport)?;
-        if bytes.is_empty() || bytes.len() > MAX_VISUAL_BYTES
+        if bytes.is_empty()
+            || bytes.len() > MAX_VISUAL_BYTES
             || format!("{:x}", Sha256::digest(&bytes)) != sha256
             || match mime {
                 "image/png" => !bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
-                "image/webp" => bytes.len() < 12 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WEBP",
+                "image/webp" => {
+                    bytes.len() < 12 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WEBP"
+                }
                 _ => true,
             }
         {

@@ -1,7 +1,7 @@
 name: ToastRAM Connect Rust validation
 on:
   push:
-    branches: [main]
+    branches: [main, development]
   pull_request:
   workflow_dispatch:
 jobs:
@@ -17,9 +17,9 @@ jobs:
         with:
           components: rustfmt, clippy
       - name: Test core and C ABI
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
       - name: Build release native libraries
-        run: cargo build --workspace --release
+        run: cargo build --workspace --release --locked
       - name: Verify formatting
         if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --all -- --check
@@ -33,3 +33,16 @@ jobs:
           python -m pip install cryptography
           python tests/disposable_tls.py target/release/toastlink.exe
           python tests/account_tls.py target/release/toastlink_ffi.dll
+
+      - name: Retain tested Windows account SDK
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: toastlink-windows-sdk-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            target/release/toastlink_ffi.dll
+            target/release/toastlink_ffi.dll.lib
+            target/release/toastlink.exe
+            include/toast_account_v2.h

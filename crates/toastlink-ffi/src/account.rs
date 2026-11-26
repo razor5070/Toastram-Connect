@@ -1,4 +1,5 @@
 //! Account ABI v2. All handles are checked integer IDs, including result handles.
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
@@ -11,7 +12,6 @@ use std::{
     time::Instant,
 };
 use toastlink_core::account::{AccountClient, Actor, DeviceGrant, Error, Session, VisualKind};
-use base64::{engine::general_purpose::STANDARD, Engine as _};
 use uuid::Uuid;
 
 struct State {
@@ -223,7 +223,12 @@ impl State {
             Op::ActivePersona => json!(s.active_persona()?),
             Op::Persona { persona_id } => json!(s.persona(persona_id)?),
             Op::Visuals { persona_id } => json!(s.visuals(persona_id)?),
-            Op::VisualAsset { persona_id, kind, sha256, mime } => {
+            Op::VisualAsset {
+                persona_id,
+                kind,
+                sha256,
+                mime,
+            } => {
                 let bytes = s.visual_asset(persona_id, kind, &sha256, &mime)?;
                 json!({"sha256":sha256,"mime":mime,"data_base64":STANDARD.encode(bytes)})
             }

@@ -174,3 +174,9 @@ A changed hash is a protocol failure: refresh metadata, never display
 mismatched bytes. The desktop must additionally decode pixels, validate
 frame bounds, reject stale persona/connection generations, and atomically
 swap matching visual sets. No visual writes or publication are exposed here.
+
+The Rust validation workflow runs on development as well as main. Its
+Windows job builds the locked dependency graph, runs the disposable TLS
+tests, and retains the DLL, MSVC import library, CLI and account ABI header
+as a commit-specific artifact only after successful validation. It does
+not deploy, publish a release, or modify any live account.
