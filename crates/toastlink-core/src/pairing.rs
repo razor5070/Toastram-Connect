@@ -28,7 +28,10 @@ pub struct Pairing<'a> {
     file: &'a ConnectionFile,
     client: Client,
 }
-pub struct Eligible<'a>(Pairing<'a>);
+pub struct Eligible<'a> {
+    // Keep the verified connection alive; redemption is implemented on Windows.
+    _pairing: Pairing<'a>,
+}
 
 #[derive(Deserialize)]
 struct Preflight {
@@ -36,6 +39,7 @@ struct Preflight {
     enrollment_id: String,
 }
 
+#[cfg(windows)]
 #[derive(Deserialize)]
 struct Grant {
     token_type: String,
@@ -45,6 +49,7 @@ struct Grant {
     scopes: Vec<String>,
     expires_at: String,
 }
+#[cfg(windows)]
 impl Drop for Grant {
     fn drop(&mut self) {
         self.access_token.zeroize();
@@ -118,7 +123,7 @@ impl<'a> Pairing<'a> {
         if body.status != "eligible" || body.enrollment_id != self.file.wire.enrollment.id {
             return Err(Error::Protocol);
         }
-        Ok(Eligible(self))
+        Ok(Eligible { _pairing: self })
     }
 }
 
@@ -126,7 +131,7 @@ impl<'a> Pairing<'a> {
 impl Eligible<'_> {
     /// Consumes preflight eligibility. Returns the protected credential locator after durable storage.
     pub fn redeem_windows(self) -> Result<String, Error> {
-        let pairing = self.0;
+        let pairing = self._pairing;
         let response = pairing.post("redeem", 201).map_err(|err| match err {
             Error::Transport | Error::Protocol => Error::RedemptionUncertain,
             other => other,
