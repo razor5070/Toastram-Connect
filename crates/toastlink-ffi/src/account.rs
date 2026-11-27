@@ -443,6 +443,24 @@ mod tests {
     }
 
     #[test]
+    fn expansion_operations_are_optional_and_strictly_scoped() {
+        let persona = Uuid::new_v4();
+        let manifest = json!({"op":"expansion_manifest","persona_id":persona});
+        assert!(matches!(serde_json::from_value::<Op>(manifest.clone()),
+            Ok(Op::ExpansionManifest { persona_id }) if persona_id == persona));
+        let mut extra = manifest;
+        extra["account_id"] = json!("untrusted");
+        assert!(serde_json::from_value::<Op>(extra).is_err());
+        let request = json!({"op":"visual_asset","persona_id":persona,
+            "kind":"expansion","sha256":"a".repeat(64),"mime":"image/png"});
+        assert!(matches!(serde_json::from_value::<Op>(request.clone()),
+            Ok(Op::VisualAsset { persona_id, kind: VisualKind::Expansion, .. }) if persona_id == persona));
+        let mut invalid = request;
+        invalid["kind"] = json!("../other");
+        assert!(serde_json::from_value::<Op>(invalid).is_err());
+    }
+
+    #[test]
     fn restore_last_memory_operation_parses_and_rejects_extra_fields() {
         let persona = Uuid::new_v4();
         let operation = serde_json::json!({
