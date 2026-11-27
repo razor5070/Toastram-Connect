@@ -1305,20 +1305,27 @@ pub struct ConversationRequest {
 }
 impl ConversationRequest {
     pub fn wait(self) -> (ConversationResponseBinding, Result<serde_json::Value,Error>) {
-        let result=receive_bounded::<ConversationReply>(self.request,200,CONVERSATION_MAX)
+        let ConversationRequest{request,op,execution_id,access}=self;
+        let result=receive_bounded::<ConversationReply>(request,200,CONVERSATION_MAX)
             .and_then(|r| {
                 let value=r.result;
-                if self.op==ConversationOp::ToolClaim &&
+                if op==ConversationOp::ToolClaim &&
                     (value.get("dispatch").and_then(|v|v.as_bool()).is_none()
-                     || value.get("execution_id")!=self.execution_id.as_ref()) {
+                     || value.get("execution_id")!=execution_id.as_ref()) {
                     return Err(Error::Protocol);
                 }
                 Ok(value)
             });
-        (ConversationResponseBinding{access:self.access},result)
+        (ConversationResponseBinding{access},result)
     }
 }
 pub struct ConversationResponseBinding { access: Zeroizing<String> }
+fn finish_bound_conversation(access:&mut Zeroizing<String>,binding:ConversationResponseBinding,
+    result:Result<serde_json::Value,Error>)->Result<serde_json::Value,Error>{
+    if access.is_empty() || access.as_str()!=binding.access.as_str(){return Err(Error::LoginRequired);}
+    if matches!(&result,Err(Error::LoginRequired)){zeroize::Zeroize::zeroize(&mut **access);}
+    result
+}
 impl Session {
     /// Explicit, allowlisted conversation call; caller owns operation UUIDs and retry policy.
     pub fn conversation(&mut self, op: ConversationOp, args: serde_json::Map<String,serde_json::Value>) -> Result<serde_json::Value,Error> {
@@ -1363,9 +1370,7 @@ impl Session {
     /// uncertain; callers must reconcile, not replay blindly.
     pub fn finish_conversation(&mut self,binding:ConversationResponseBinding,
         result:Result<serde_json::Value,Error>)->Result<serde_json::Value,Error>{
-        if self.access.is_empty() || *self.access!=*binding.access {return Err(Error::LoginRequired);}
-        if matches!(&result,Err(Error::LoginRequired)) {zeroize::Zeroize::zeroize(&mut *self.access);}
-        result
+        finish_bound_conversation(&mut self.access,binding,result)
     }
     pub fn conversation_event_request(&mut self, after:u64)->Result<ConversationEventRequest,Error> {
         if after>=i64::MAX as u64 {return Err(Error::Protocol);}
@@ -1380,6 +1385,18 @@ impl Session {
 
 #[cfg(test)]
 mod account_tests {
+    #[test]
+    fn conversation_response_binding_rejects_stale_results_and_preserves_new_token() {
+        let mut current=Zeroizing::new("current".to_owned());
+        let bound=|token:&str|ConversationResponseBinding{access:Zeroizing::new(token.to_owned())};
+        assert!(matches!(finish_bound_conversation(&mut current,bound("old"),Ok(json!({"revision":3}))),Err(Error::LoginRequired)));
+        assert!(matches!(finish_bound_conversation(&mut current,bound("old"),Err(Error::LoginRequired)),Err(Error::LoginRequired)));
+        assert_eq!(current.as_str(),"current");
+        assert_eq!(finish_bound_conversation(&mut current,bound("current"),Ok(json!(3))).unwrap(),json!(3));
+        assert!(matches!(finish_bound_conversation(&mut current,bound("current"),Err(Error::LoginRequired)),Err(Error::LoginRequired)));
+        assert!(current.is_empty());
+        assert!(matches!(finish_bound_conversation(&mut current,bound(""),Ok(json!(3))),Err(Error::LoginRequired)));
+    }
     #[test]
     fn conversation_scopes_and_requests() {
         assert!(valid_scopes(&["profile","conversation.read"]));
