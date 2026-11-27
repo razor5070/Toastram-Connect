@@ -19,6 +19,8 @@ Every call takes an object with an op field. The operations and other fields are
 | forget_local | | null after local cleanup only |
 | list_personas, active_persona | | array, or active object/null |
 | persona, activate | persona_id | persona |
+| visuals | persona_id | unified V2 visual metadata (or empty assets) |
+| visual_asset | persona_id, kind (avatar or sprites), sha256, mime (image/png) | sha256, mime, data_base64 |
 | blank | activate | persona |
 | generate | model, activate | persona |
 | update | persona_id, name, profile, expected_revision, actor | persona |
@@ -35,3 +37,5 @@ A durable marker replaces the predecessor before refresh. After an ambiguous rot
 Forgetting locally cannot guarantee revocation when the server cannot be reached. Use the account portal to revoke in that case.
 
 The standalone toast_account_v2_forget_local function accepts the same origin and CA options as open and erases the bound local credential without contacting the server.
+
+Published visual assets use a single 17-state atlas (2448×1440, 136 frames). The SDK validates the V2 manifest and owner-review bindings before returning metadata. The former expansion operations are rejected. Portrait downloads are bounded to 2 MiB; atlas downloads to 8 MiB. For visual_asset results only, a 12 MiB host copy ceiling accommodates the maximum base64 JSON envelope; the input limit and nonvisual operations are unchanged. Query the actual result length before allocating. The host must decode and check image dimensions and atomically apply matching persona-scoped assets.

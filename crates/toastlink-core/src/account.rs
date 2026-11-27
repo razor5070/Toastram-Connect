@@ -512,7 +512,64 @@ impl Session {
     }
 }
 
-const MAX_VISUAL_BYTES: usize = 2 * 1024 * 1024;
+const MAX_AVATAR_BYTES: usize = 2 * 1024 * 1024;
+const MAX_ATLAS_BYTES: usize = 8 * 1024 * 1024;
+const VISUAL_STATES: [&str; 17] = [
+    "idle", "thinking", "happy", "upset", "searching", "approval_wait",
+    "listening", "talking", "memory", "eye_roll", "facepalm", "laughing",
+    "smug", "surprised", "yawning", "waving", "arms_crossed",
+];
+const VISUAL_FRAME_MS: [u32; 17] = [
+    155, 180, 130, 175, 190, 210, 165, 135, 170, 170, 200, 125, 190, 140, 230, 150, 200,
+];
+const ANIMATION_VERSION: &str = "toastram.avatar-animation-selection.v2";
+const PLAYBACK_VERSION: &str = "toastram.avatar-playback.v2";
+const REVIEW_SCHEMA: &str = "toastram.avatar-owner-review.v2";
+
+fn unified_manifest() -> serde_json::Value {
+    let mut frames = serde_json::Map::new();
+    for (column, state) in VISUAL_STATES.iter().enumerate() {
+        let cells: Vec<_> = (0..8).map(|row| json!({
+            "x": column * 144, "y": row * 180, "w": 144, "h": 180,
+            "ms": VISUAL_FRAME_MS[column]
+        })).collect();
+        frames.insert((*state).into(), json!(cells));
+    }
+    json!({"states": VISUAL_STATES, "custom": [], "fallback": "idle", "frames": frames})
+}
+
+fn unified_playback() -> serde_json::Value {
+    let timing: serde_json::Map<String, serde_json::Value> = VISUAL_STATES.iter()
+        .zip(VISUAL_FRAME_MS.iter()).map(|(state, ms)| ((*state).into(), json!(ms))).collect();
+    let one_shot: Vec<_> = VISUAL_STATES.iter().copied().filter(|s| {
+        *s == "happy" || *s == "upset" || VISUAL_STATES[9..].contains(s)
+    }).collect();
+    let loops: Vec<_> = VISUAL_STATES.iter().copied().filter(|s| !one_shot.contains(s)).collect();
+    json!({
+        "version": PLAYBACK_VERSION, "frame_count_per_state": 8, "frame_ms": timing,
+        "blend_ms": 120, "one_shot": one_shot, "loop": loops,
+        "interrupt": "host_priority_immediate_cut", "clock": "host_monotonic_integer_ms",
+        "transition": "two_existing_atlas_frames_crossfade"
+    })
+}
+
+fn unified_selection() -> serde_json::Value {
+    let mut affects = vec![
+        "neutral", "joy", "amusement", "warmth", "curiosity", "confusion",
+        "annoyance", "sadness", "sarcasm", "excitement",
+    ];
+    affects.extend_from_slice(&VISUAL_STATES[9..]);
+    json!({
+        "version": ANIMATION_VERSION, "states": VISUAL_STATES, "fallback": "idle",
+        "profiles": ["balanced", "reserved", "playful", "expressive"],
+        "default_profile": "balanced",
+        "host_phases": ["idle", "listening", "thinking", "searching", "memory", "approval_wait", "responding"],
+        "cue": {"version": ANIMATION_VERSION, "affect": affects},
+        "cue_scope": "current_response_only",
+        "model_instruction": "Optionally supply one structured affect cue alongside your normal response using the advertised enum. Choose an affect consistent with your own persona and this response. Never insert the cue into visible reply text. Do not claim tool or approval states.",
+        "max_cues_per_response": 1, "extra_inference_required": false
+    })
+}
 
 fn visual_hash(value: &str) -> bool {
     value.len() == 64
@@ -526,14 +583,19 @@ fn visual_hash(value: &str) -> bool {
 pub enum VisualKind {
     Avatar,
     Sprites,
-    Expansion,
 }
 impl VisualKind {
+    fn max_bytes(&self) -> usize {
+        match self {
+            Self::Avatar => MAX_AVATAR_BYTES,
+            Self::Sprites => MAX_ATLAS_BYTES,
+        }
+    }
+
     fn path(&self) -> &'static str {
         match self {
             Self::Avatar => "avatar",
             Self::Sprites => "sprites",
-            Self::Expansion => "expansion",
         }
     }
 }
@@ -545,7 +607,7 @@ pub struct VisualAsset {
 }
 impl VisualAsset {
     fn valid(&self) -> bool {
-        visual_hash(&self.sha256) && matches!(self.mime.as_str(), "image/png" | "image/webp")
+        visual_hash(&self.sha256) && self.mime == "image/png"
     }
 }
 
@@ -557,6 +619,27 @@ pub struct Visuals {
     pub manifest: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub studio_review: Option<serde_json::Value>,
+}
+
+impl Visuals {
+    fn valid(&self, persona: uuid::Uuid) -> bool {
+        match (&self.avatar, &self.sprites, &self.manifest, &self.studio_review) {
+            // An unpublished or retired legacy package can retain a nonzero revision.
+            (None, None, None, None) => true,
+            (Some(avatar), Some(sprites), Some(manifest), Some(review)) => {
+                self.revision > 0
+                    && avatar.valid() && sprites.valid()
+                    && manifest == &unified_manifest()
+                    && review["schema"].as_str() == Some(REVIEW_SCHEMA)
+                    && review["persona_id"].as_str() == Some(persona.to_string().as_str())
+                    && review["preview_sha256"].as_str() == Some(avatar.sha256.as_str())
+                    && review["atlas_sha256"].as_str() == Some(sprites.sha256.as_str())
+                    && review["animation_selection"] == unified_selection()
+                    && review["animation_playback"] == unified_playback()
+            }
+            _ => false,
+        }
+    }
 }
 
 #[derive(serde::Serialize, Deserialize)]
@@ -690,31 +773,10 @@ impl Session {
         let response = self
             .api::<Envelope>(&format!("personas/{id}/visuals"), None, 200)?
             .visuals;
-        if response.avatar.as_ref().is_some_and(|a| !a.valid())
-            || response.sprites.as_ref().is_some_and(|a| !a.valid())
-            || response.sprites.is_some() != response.manifest.is_some()
-            || response.manifest.as_ref().is_some_and(|m| !m.is_object())
-            || response
-                .studio_review
-                .as_ref()
-                .is_some_and(|m| !m.is_object())
-            || (response.revision == 0
-                && (response.avatar.is_some()
-                    || response.sprites.is_some()
-                    || response.studio_review.is_some()))
-        {
+        if !response.valid(id) {
             return Err(Error::Protocol);
         }
         Ok(response)
-    }
-
-    /// Optional V3.7 manifest; old servers return NotFound.
-    pub fn expansion_manifest(&mut self, id: uuid::Uuid) -> Result<serde_json::Value, Error> {
-        #[derive(Deserialize)]
-        struct Envelope { expansion: serde_json::Value }
-        let value = self.api::<Envelope>(&format!("personas/{id}/visuals/expansion-manifest"), None, 200)?.expansion;
-        if !value.is_object() { return Err(Error::Protocol); }
-        Ok(value)
     }
 
     /// Fetch only the bytes pinned by the caller's previously observed metadata.
@@ -727,11 +789,10 @@ impl Session {
         mime: &str,
     ) -> Result<Vec<u8>, Error> {
         use sha2::{Digest, Sha256};
-        if !visual_hash(sha256) || !matches!(mime, "image/png" | "image/webp") {
+        if !visual_hash(sha256) || mime != "image/png" {
             return Err(Error::Protocol);
         }
-        let max_bytes = if matches!(&kind, VisualKind::Expansion) { 8 * 1024 * 1024 } else { MAX_VISUAL_BYTES };
-        if matches!(&kind, VisualKind::Expansion) && mime != "image/png" { return Err(Error::Protocol); }
+        let max_bytes = kind.max_bytes();
         self.ready()?;
         let url = format!(
             "{}/v1/auth/personas/{id}/visuals/{}",
@@ -779,13 +840,7 @@ impl Session {
         if bytes.is_empty()
             || bytes.len() > max_bytes
             || format!("{:x}", Sha256::digest(&bytes)) != sha256
-            || match mime {
-                "image/png" => !bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
-                "image/webp" => {
-                    bytes.len() < 12 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WEBP"
-                }
-                _ => true,
-            }
+            || !bytes.starts_with(b"\x89PNG\r\n\x1a\n")
         {
             return Err(Error::Protocol);
         }
@@ -1011,6 +1066,49 @@ impl Session {
 #[cfg(test)]
 mod account_tests {
     use super::*;
+
+    #[test]
+    fn unified_visual_metadata_is_atomic_and_bound() {
+        let id = uuid::Uuid::new_v4();
+        let avatar = "a".repeat(64);
+        let atlas = "b".repeat(64);
+        let fixture = json!({
+            "revision": 1,
+            "avatar": {"sha256": avatar, "mime": "image/png"},
+            "sprites": {"sha256": atlas, "mime": "image/png"},
+            "manifest": unified_manifest(),
+            "studio_review": {
+                "schema": REVIEW_SCHEMA, "persona_id": id,
+                "preview_sha256": avatar, "atlas_sha256": atlas,
+                "animation_selection": unified_selection(),
+                "animation_playback": unified_playback()
+            }
+        });
+        let valid = |value| serde_json::from_value::<Visuals>(value).unwrap().valid(id);
+        assert!(valid(fixture.clone()));
+        for (path, replacement) in [
+            ("/revision", json!(0)),
+            ("/sprites", json!(null)),
+            ("/avatar/mime", json!("image/webp")),
+            ("/manifest/frames/waving/7/x", json!(0)),
+            ("/manifest/states/16", json!("custom")),
+            ("/studio_review/schema", json!("toastram.avatar-owner-review.v1")),
+            ("/studio_review/persona_id", json!(uuid::Uuid::new_v4())),
+            ("/studio_review/atlas_sha256", json!("c".repeat(64))),
+            ("/studio_review/animation_selection/version", json!("v1")),
+            ("/studio_review/animation_playback/blend_ms", json!(0)),
+        ] {
+            let mut bad = fixture.clone();
+            *bad.pointer_mut(path).unwrap() = replacement;
+            assert!(!valid(bad), "{path}");
+        }
+        for revision in [0, 7] {
+            assert!(valid(json!({"revision": revision, "avatar": null,
+                "sprites": null, "manifest": null})));
+        }
+        assert_eq!(VisualKind::Avatar.max_bytes(), 2 * 1024 * 1024);
+        assert_eq!(VisualKind::Sprites.max_bytes(), 8 * 1024 * 1024);
+    }
     #[test]
     fn save_memory_request_forwards_optional_provenance() {
         let persona = uuid::Uuid::new_v4();

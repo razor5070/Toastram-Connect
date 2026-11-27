@@ -159,7 +159,11 @@ the host. They never call legacy bearer-fingerprint endpoints.
 ```
 
 Returns the visual metadata object directly (revision, avatar, sprites,
-manifest, optional studio_review). A missing avatar is explicit null.
+manifest, studio_review). Unpublished or retired packages return null for
+avatar, sprites and manifest, possibly with a nonzero revision. A published
+package must contain both PNG assets and a matching V2 owner-review receipt.
+The SDK validates the exact 17-state, 136-frame manifest, the V2 selection
+and playback contracts, persona ID, and the receipt's asset hashes.
 Use the selected persona UUID, not a display name. Cache only verified
 assets scoped to the authenticated issuer, account and persona.
 
@@ -168,12 +172,19 @@ assets scoped to the authenticated issuer, account and persona.
 ```
 
 Returns sha256, mime, data_base64. Only avatar/sprites kinds are permitted.
-The SDK checks exact MIME, ETag, SHA-256, image signature and the existing
-2 MiB binary limit. The JSON result fits the desktop's 4 MiB FFI copy cap.
-A changed hash is a protocol failure: refresh metadata, never display
-mismatched bytes. The desktop must additionally decode pixels, validate
-frame bounds, reject stale persona/connection generations, and atomically
-swap matching visual sets. No visual writes or publication are exposed here.
+The SDK checks exact PNG MIME, ETag, SHA-256 and image signature, with
+a 2 MiB portrait limit and an 8 MiB unified atlas limit. The atlas is
+2448×1440 (17 columns × 8 rows of 144×180 frames). The old expansion
+manifest operation and expansion asset kind are removed; old visual
+packages are not accepted. The C ABI signatures are unchanged, but
+desktop callers must accommodate base64 expansion: an 8 MiB PNG produces
+11,184,812 base64 bytes plus JSON overhead. Use the two-call size query
+and a bounded 12 MiB result allowance for visual_asset only; keep existing
+limits for other operations. A changed hash is a protocol failure:
+refresh metadata, never display mismatched bytes. The desktop must
+additionally decode pixels, verify dimensions and frame bounds, reject
+stale persona/connection generations, and atomically swap matching
+visual sets. No visual writes or publication are exposed here.
 
 The Rust validation workflow runs on development as well as main. Its
 Windows job builds the locked dependency graph, runs the disposable TLS

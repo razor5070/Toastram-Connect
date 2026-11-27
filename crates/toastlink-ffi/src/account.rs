@@ -110,9 +110,6 @@ enum Op {
     Visuals {
         persona_id: Uuid,
     },
-    ExpansionManifest {
-        persona_id: Uuid,
-    },
     VisualAsset {
         persona_id: Uuid,
         kind: VisualKind,
@@ -226,7 +223,6 @@ impl State {
             Op::ActivePersona => json!(s.active_persona()?),
             Op::Persona { persona_id } => json!(s.persona(persona_id)?),
             Op::Visuals { persona_id } => json!(s.visuals(persona_id)?),
-            Op::ExpansionManifest { persona_id } => s.expansion_manifest(persona_id)?,
             Op::VisualAsset {
                 persona_id,
                 kind,
@@ -443,21 +439,26 @@ mod tests {
     }
 
     #[test]
-    fn expansion_operations_are_optional_and_strictly_scoped() {
+    fn unified_visual_operations_are_strictly_scoped() {
         let persona = Uuid::new_v4();
-        let manifest = json!({"op":"expansion_manifest","persona_id":persona});
+        let manifest = json!({"op":"visuals","persona_id":persona});
         assert!(matches!(serde_json::from_value::<Op>(manifest.clone()),
-            Ok(Op::ExpansionManifest { persona_id }) if persona_id == persona));
+            Ok(Op::Visuals { persona_id }) if persona_id == persona));
         let mut extra = manifest;
         extra["account_id"] = json!("untrusted");
         assert!(serde_json::from_value::<Op>(extra).is_err());
         let request = json!({"op":"visual_asset","persona_id":persona,
-            "kind":"expansion","sha256":"a".repeat(64),"mime":"image/png"});
+            "kind":"sprites","sha256":"a".repeat(64),"mime":"image/png"});
         assert!(matches!(serde_json::from_value::<Op>(request.clone()),
-            Ok(Op::VisualAsset { persona_id, kind: VisualKind::Expansion, .. }) if persona_id == persona));
-        let mut invalid = request;
-        invalid["kind"] = json!("../other");
-        assert!(serde_json::from_value::<Op>(invalid).is_err());
+            Ok(Op::VisualAsset { persona_id, kind: VisualKind::Sprites, .. }) if persona_id == persona));
+        for kind in ["../other", "expansion"] {
+            let mut invalid = request.clone();
+            invalid["kind"] = json!(kind);
+            assert!(serde_json::from_value::<Op>(invalid).is_err());
+        }
+        assert!(serde_json::from_value::<Op>(json!({
+            "op":"expansion_manifest","persona_id":persona
+        })).is_err());
     }
 
     #[test]

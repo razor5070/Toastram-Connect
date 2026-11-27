@@ -2,6 +2,9 @@
 
 import ctypes as c
 import base64
+import copy as deepcopy_module
+import struct
+import zlib
 import hashlib
 import http.server
 import json
@@ -116,14 +119,18 @@ class Server(http.server.BaseHTTPRequestHandler):
             return self.send(200, {"persona": persona})
         visual_base="/v1/auth/personas/"+persona["id"]+"/visuals"
         if self.path == visual_base:
-            return self.send(200, {"visuals":{"revision":1,
-                "avatar":{"sha256":visual_hash,"mime":"image/png"},
-                "sprites":None,"manifest":None}})
-        if self.path == visual_base+"/avatar":
-            body=visual_bytes+(b"changed" if state.get("bad_visual") else b"")
+            return self.send(200, {"visuals":state.get("visual_metadata", visual_metadata)})
+        if self.path in (visual_base+"/avatar", visual_base+"/sprites"):
+            is_atlas = self.path.endswith("/sprites")
+            body, digest = (atlas_bytes, atlas_hash) if is_atlas else (visual_bytes, visual_hash)
+            body += b"changed" if state.get("bad_visual") else b""
             self.send_response(200)
             self.send_header("Content-Type","image/png")
-            self.send_header("ETag",'"'+visual_hash+'"')
+            self.send_header("ETag",'"'+digest+'"')
+            if state.get("oversize_visual"):
+                self.send_header("Content-Length",str(len(body) + 8*1024*1024))
+                self.end_headers()
+                return
             self.send_header("Content-Length",str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -248,6 +255,38 @@ device, memory, device_secret = uid(), uid(), token()
 persona = dict(id=uid(), name="", profile="", state="blank", revision=1)
 visual_bytes=base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+X2uoAAAAASUVORK5CYII=")
 visual_hash=hashlib.sha256(visual_bytes).hexdigest()
+def png_chunk(kind, data):
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind+data))
+# Valid RGBA PNG with a private ancillary chunk to exercise the full 8 MiB transfer.
+atlas_header = b"\x89PNG\r\n\x1a\n" + png_chunk(b"IHDR", struct.pack(">IIBBBBB",2448,1440,8,6,0,0,0))
+atlas_data = png_chunk(b"IDAT", zlib.compress((b"\0"+b"\x01\x02\x03\xff"*2448)*1440))
+atlas_end = png_chunk(b"IEND", b"")
+atlas_bytes = atlas_header + atlas_data + png_chunk(b"raNd", b"\0"*(8*1024*1024-len(atlas_header+atlas_data+atlas_end)-12)) + atlas_end
+assert len(atlas_bytes)==8*1024*1024
+atlas_hash=hashlib.sha256(atlas_bytes).hexdigest()
+states = "idle thinking happy upset searching approval_wait listening talking memory eye_roll facepalm laughing smug surprised yawning waving arms_crossed".split()
+timing = dict(zip(states, (155,180,130,175,190,210,165,135,170,170,200,125,190,140,230,150,200)))
+manifest = dict(states=states,custom=[],fallback="idle",frames={
+    s:[dict(x=i*144,y=r*180,w=144,h=180,ms=timing[s]) for r in range(8)]
+    for i,s in enumerate(states)})
+one_shot = ["happy","upset"]+states[9:]
+version = "toastram.avatar-animation-selection.v2"
+selection = dict(version=version,states=states,fallback="idle",
+    profiles=["balanced","reserved","playful","expressive"],default_profile="balanced",
+    host_phases=["idle","listening","thinking","searching","memory","approval_wait","responding"],
+    cue=dict(version=version,affect="neutral joy amusement warmth curiosity confusion annoyance sadness sarcasm excitement".split()+states[9:]),
+    cue_scope="current_response_only",
+    model_instruction="Optionally supply one structured affect cue alongside your normal response using the advertised enum. Choose an affect consistent with your own persona and this response. Never insert the cue into visible reply text. Do not claim tool or approval states.",
+    max_cues_per_response=1,extra_inference_required=False)
+playback = dict(version="toastram.avatar-playback.v2",frame_count_per_state=8,frame_ms=timing,
+    blend_ms=120,one_shot=one_shot,loop=[s for s in states if s not in one_shot],
+    interrupt="host_priority_immediate_cut",clock="host_monotonic_integer_ms",
+    transition="two_existing_atlas_frames_crossfade")
+visual_metadata = dict(revision=1,avatar=dict(sha256=visual_hash,mime="image/png"),
+    sprites=dict(sha256=atlas_hash,mime="image/png"),manifest=manifest,
+    studio_review=dict(schema="toastram.avatar-owner-review.v2",persona_id=persona["id"],
+        preview_sha256=visual_hash,atlas_sha256=atlas_hash,
+        animation_selection=selection,animation_playback=playback))
 state = dict(account=uid(), access=token(), refresh=token(), revoked=False, polls=0)
 with tempfile.TemporaryDirectory() as tmp:
     root = pathlib.Path(tmp)
@@ -323,7 +362,29 @@ with tempfile.TemporaryDirectory() as tmp:
         assert operation(client, "list_personas") == [persona]
         assert operation(client, "persona", persona_id=persona["id"]) == persona
         metadata=operation(client,"visuals",persona_id=persona["id"])
-        assert metadata["revision"]==1 and metadata["avatar"]["sha256"]==visual_hash
+        assert metadata==visual_metadata
+        atlas_args=dict(persona_id=persona["id"],kind="sprites",sha256=atlas_hash,mime="image/png")
+        atlas_result=operation(client,"visual_asset",**atlas_args)
+        assert base64.b64decode(atlas_result["data_base64"],validate=True)==atlas_bytes
+        assert len(atlas_result["data_base64"])==4*((len(atlas_bytes)+2)//3)
+        assert atlas_result["sha256"]==atlas_hash and atlas_result["mime"]=="image/png"
+        state["oversize_visual"]=True
+        operation(client,"visual_asset",3,**atlas_args)
+        state.pop("oversize_visual")
+        operation(client,"visual_asset",3,**dict(atlas_args,kind="expansion"))
+        operation(client,"expansion_manifest",3,persona_id=persona["id"])
+        state["visual_metadata"]=dict(revision=7,avatar=None,sprites=None,manifest=None)
+        assert operation(client,"visuals",persona_id=persona["id"])["revision"]==7
+        for field in ("manifest","studio_review"):
+            broken=deepcopy_module.deepcopy(visual_metadata)
+            broken[field]=None
+            state["visual_metadata"]=broken
+            operation(client,"visuals",3,persona_id=persona["id"])
+        broken=deepcopy_module.deepcopy(visual_metadata)
+        broken["manifest"]["frames"]["arms_crossed"][7]["x"]=0
+        state["visual_metadata"]=broken
+        operation(client,"visuals",3,persona_id=persona["id"])
+        state.pop("visual_metadata")
         visual_args=dict(persona_id=persona["id"],kind="avatar",sha256=visual_hash,mime="image/png")
         result=operation(client,"visual_asset",**visual_args)
         assert base64.b64decode(result["data_base64"],validate=True)==visual_bytes
