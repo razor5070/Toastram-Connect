@@ -526,12 +526,14 @@ fn visual_hash(value: &str) -> bool {
 pub enum VisualKind {
     Avatar,
     Sprites,
+    Expansion,
 }
 impl VisualKind {
     fn path(&self) -> &'static str {
         match self {
             Self::Avatar => "avatar",
             Self::Sprites => "sprites",
+            Self::Expansion => "expansion",
         }
     }
 }
@@ -706,6 +708,15 @@ impl Session {
         Ok(response)
     }
 
+    /// Optional V3.7 manifest; old servers return NotFound.
+    pub fn expansion_manifest(&mut self, id: uuid::Uuid) -> Result<serde_json::Value, Error> {
+        #[derive(Deserialize)]
+        struct Envelope { expansion: serde_json::Value }
+        let value = self.api::<Envelope>(&format!("personas/{id}/visuals/expansion-manifest"), None, 200)?.expansion;
+        if !value.is_object() { return Err(Error::Protocol); }
+        Ok(value)
+    }
+
     /// Fetch only the bytes pinned by the caller's previously observed metadata.
     /// Redirects are disabled by the existing AccountClient. No bearer is exposed.
     pub fn visual_asset(
@@ -719,6 +730,8 @@ impl Session {
         if !visual_hash(sha256) || !matches!(mime, "image/png" | "image/webp") {
             return Err(Error::Protocol);
         }
+        let max_bytes = if matches!(&kind, VisualKind::Expansion) { 8 * 1024 * 1024 } else { MAX_VISUAL_BYTES };
+        if matches!(&kind, VisualKind::Expansion) && mime != "image/png" { return Err(Error::Protocol); }
         self.ready()?;
         let url = format!(
             "{}/v1/auth/personas/{id}/visuals/{}",
@@ -754,17 +767,17 @@ impl Session {
                 != Some(etag.as_str())
             || response
                 .content_length()
-                .is_some_and(|n| n > MAX_VISUAL_BYTES as u64)
+                .is_some_and(|n| n > max_bytes as u64)
         {
             return Err(Error::Protocol);
         }
         let mut bytes = Vec::new();
         response
-            .take((MAX_VISUAL_BYTES + 1) as u64)
+            .take((max_bytes + 1) as u64)
             .read_to_end(&mut bytes)
             .map_err(|_| Error::Transport)?;
         if bytes.is_empty()
-            || bytes.len() > MAX_VISUAL_BYTES
+            || bytes.len() > max_bytes
             || format!("{:x}", Sha256::digest(&bytes)) != sha256
             || match mime {
                 "image/png" => !bytes.starts_with(b"\x89PNG\r\n\x1a\n"),

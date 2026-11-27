@@ -110,6 +110,9 @@ enum Op {
     Visuals {
         persona_id: Uuid,
     },
+    ExpansionManifest {
+        persona_id: Uuid,
+    },
     VisualAsset {
         persona_id: Uuid,
         kind: VisualKind,
@@ -223,6 +226,7 @@ impl State {
             Op::ActivePersona => json!(s.active_persona()?),
             Op::Persona { persona_id } => json!(s.persona(persona_id)?),
             Op::Visuals { persona_id } => json!(s.visuals(persona_id)?),
+            Op::ExpansionManifest { persona_id } => s.expansion_manifest(persona_id)?,
             Op::VisualAsset {
                 persona_id,
                 kind,
