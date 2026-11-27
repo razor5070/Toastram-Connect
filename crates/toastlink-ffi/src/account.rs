@@ -458,7 +458,8 @@ mod tests {
         }
         assert!(serde_json::from_value::<Op>(json!({
             "op":"expansion_manifest","persona_id":persona
-        })).is_err());
+        }))
+        .is_err());
     }
 
     #[test]

@@ -515,9 +515,23 @@ impl Session {
 const MAX_AVATAR_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ATLAS_BYTES: usize = 8 * 1024 * 1024;
 const VISUAL_STATES: [&str; 17] = [
-    "idle", "thinking", "happy", "upset", "searching", "approval_wait",
-    "listening", "talking", "memory", "eye_roll", "facepalm", "laughing",
-    "smug", "surprised", "yawning", "waving", "arms_crossed",
+    "idle",
+    "thinking",
+    "happy",
+    "upset",
+    "searching",
+    "approval_wait",
+    "listening",
+    "talking",
+    "memory",
+    "eye_roll",
+    "facepalm",
+    "laughing",
+    "smug",
+    "surprised",
+    "yawning",
+    "waving",
+    "arms_crossed",
 ];
 const VISUAL_FRAME_MS: [u32; 17] = [
     155, 180, 130, 175, 190, 210, 165, 135, 170, 170, 200, 125, 190, 140, 230, 150, 200,
@@ -529,22 +543,35 @@ const REVIEW_SCHEMA: &str = "toastram.avatar-owner-review.v2";
 fn unified_manifest() -> serde_json::Value {
     let mut frames = serde_json::Map::new();
     for (column, state) in VISUAL_STATES.iter().enumerate() {
-        let cells: Vec<_> = (0..8).map(|row| json!({
-            "x": column * 144, "y": row * 180, "w": 144, "h": 180,
-            "ms": VISUAL_FRAME_MS[column]
-        })).collect();
+        let cells: Vec<_> = (0..8)
+            .map(|row| {
+                json!({
+                    "x": column * 144, "y": row * 180, "w": 144, "h": 180,
+                    "ms": VISUAL_FRAME_MS[column]
+                })
+            })
+            .collect();
         frames.insert((*state).into(), json!(cells));
     }
     json!({"states": VISUAL_STATES, "custom": [], "fallback": "idle", "frames": frames})
 }
 
 fn unified_playback() -> serde_json::Value {
-    let timing: serde_json::Map<String, serde_json::Value> = VISUAL_STATES.iter()
-        .zip(VISUAL_FRAME_MS.iter()).map(|(state, ms)| ((*state).into(), json!(ms))).collect();
-    let one_shot: Vec<_> = VISUAL_STATES.iter().copied().filter(|s| {
-        *s == "happy" || *s == "upset" || VISUAL_STATES[9..].contains(s)
-    }).collect();
-    let loops: Vec<_> = VISUAL_STATES.iter().copied().filter(|s| !one_shot.contains(s)).collect();
+    let timing: serde_json::Map<String, serde_json::Value> = VISUAL_STATES
+        .iter()
+        .zip(VISUAL_FRAME_MS.iter())
+        .map(|(state, ms)| ((*state).into(), json!(ms)))
+        .collect();
+    let one_shot: Vec<_> = VISUAL_STATES
+        .iter()
+        .copied()
+        .filter(|s| *s == "happy" || *s == "upset" || VISUAL_STATES[9..].contains(s))
+        .collect();
+    let loops: Vec<_> = VISUAL_STATES
+        .iter()
+        .copied()
+        .filter(|s| !one_shot.contains(s))
+        .collect();
     json!({
         "version": PLAYBACK_VERSION, "frame_count_per_state": 8, "frame_ms": timing,
         "blend_ms": 120, "one_shot": one_shot, "loop": loops,
@@ -555,8 +582,16 @@ fn unified_playback() -> serde_json::Value {
 
 fn unified_selection() -> serde_json::Value {
     let mut affects = vec![
-        "neutral", "joy", "amusement", "warmth", "curiosity", "confusion",
-        "annoyance", "sadness", "sarcasm", "excitement",
+        "neutral",
+        "joy",
+        "amusement",
+        "warmth",
+        "curiosity",
+        "confusion",
+        "annoyance",
+        "sadness",
+        "sarcasm",
+        "excitement",
     ];
     affects.extend_from_slice(&VISUAL_STATES[9..]);
     json!({
@@ -628,7 +663,8 @@ impl Visuals {
             (None, None, None, None) => true,
             (Some(avatar), Some(sprites), Some(manifest), Some(review)) => {
                 self.revision > 0
-                    && avatar.valid() && sprites.valid()
+                    && avatar.valid()
+                    && sprites.valid()
                     && manifest == &unified_manifest()
                     && review["schema"].as_str() == Some(REVIEW_SCHEMA)
                     && review["persona_id"].as_str() == Some(persona.to_string().as_str())
@@ -1103,8 +1139,10 @@ mod account_tests {
             assert!(!valid(bad), "{path}");
         }
         for revision in [0, 7] {
-            assert!(valid(json!({"revision": revision, "avatar": null,
-                "sprites": null, "manifest": null})));
+            assert!(valid(json!({
+                "revision": revision, "avatar": null,
+                "sprites": null, "manifest": null
+            })));
         }
         assert_eq!(VisualKind::Avatar.max_bytes(), 2 * 1024 * 1024);
         assert_eq!(VisualKind::Sprites.max_bytes(), 8 * 1024 * 1024);
