@@ -1295,9 +1295,38 @@ impl ConversationEventRequest {
     }
 }
 
+/// One validated request, detached from the mutable session while doing I/O.
+/// No refresh, retry, or session mutation is performed by the network wait.
+pub struct ConversationRequest {
+    request: RequestBuilder,
+    op: ConversationOp,
+    execution_id: Option<serde_json::Value>,
+    access: Zeroizing<String>,
+}
+impl ConversationRequest {
+    pub fn wait(self) -> (ConversationResponseBinding, Result<serde_json::Value,Error>) {
+        let result=receive_bounded::<ConversationReply>(self.request,200,CONVERSATION_MAX)
+            .and_then(|r| {
+                let value=r.result;
+                if self.op==ConversationOp::ToolClaim &&
+                    (value.get("dispatch").and_then(|v|v.as_bool()).is_none()
+                     || value.get("execution_id")!=self.execution_id.as_ref()) {
+                    return Err(Error::Protocol);
+                }
+                Ok(value)
+            });
+        (ConversationResponseBinding{access:self.access},result)
+    }
+}
+pub struct ConversationResponseBinding { access: Zeroizing<String> }
 impl Session {
     /// Explicit, allowlisted conversation call; caller owns operation UUIDs and retry policy.
     pub fn conversation(&mut self, op: ConversationOp, args: serde_json::Map<String,serde_json::Value>) -> Result<serde_json::Value,Error> {
+        let request=self.conversation_request(op,args)?;
+        let (binding,result)=request.wait();
+        self.finish_conversation(binding,result)
+    }
+    pub fn conversation_request(&mut self, op: ConversationOp, args: serde_json::Map<String,serde_json::Value>) -> Result<ConversationRequest,Error> {
         op.validate(&args)?;
         self.ready()?;
         let (path,scope,post,_,_)=op.spec();
@@ -1323,17 +1352,20 @@ impl Session {
             }}
             self.client.client.get(url)
         };
-        let result=receive_bounded::<ConversationReply>(request.bearer_auth(&*self.access)
-            .timeout(Duration::from_secs(60)),200,CONVERSATION_MAX);
-        if matches!(result,Err(Error::LoginRequired)) {zeroize::Zeroize::zeroize(&mut *self.access);}
-        let value=result?.result;
-        // A successful fresh claim must explicitly declare dispatch and bind its ID.
-        if op==ConversationOp::ToolClaim &&
-            (value.get("dispatch").and_then(|v|v.as_bool()).is_none()
-             || value.get("execution_id")!=args.get("execution_id")) {
-            return Err(Error::Protocol);
-        }
-        Ok(value)
+        Ok(ConversationRequest{
+            request:request.bearer_auth(&*self.access).timeout(Duration::from_secs(60)),
+            op,execution_id:args.get("execution_id").cloned(),
+            access:Zeroizing::new(self.access.to_string()),
+        })
+    }
+    /// Never deliver a result from a replaced/revoked credential. A stale
+    /// 401 must not erase a newer token. A write with a lost result remains
+    /// uncertain; callers must reconcile, not replay blindly.
+    pub fn finish_conversation(&mut self,binding:ConversationResponseBinding,
+        result:Result<serde_json::Value,Error>)->Result<serde_json::Value,Error>{
+        if self.access.is_empty() || *self.access!=*binding.access {return Err(Error::LoginRequired);}
+        if matches!(&result,Err(Error::LoginRequired)) {zeroize::Zeroize::zeroize(&mut *self.access);}
+        result
     }
     pub fn conversation_event_request(&mut self, after:u64)->Result<ConversationEventRequest,Error> {
         if after>=i64::MAX as u64 {return Err(Error::Protocol);}

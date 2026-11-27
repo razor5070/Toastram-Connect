@@ -333,7 +333,18 @@ pub unsafe extern "C" fn toast_account_v2_call(
             Some(Object::Client(c)) => c.clone(),
             _ => return Err(Error::Protocol),
         };
-        let result = client.lock().map_err(|_| Error::Storage)?.execute(op)?;
+        let result = match op {
+            Op::Conversation { action,args } => {
+                let request={
+                    let mut state=client.lock().map_err(|_|Error::Storage)?;
+                    state.session.as_mut().ok_or(Error::LoginRequired)?.conversation_request(action,args)?
+                };
+                let (binding,result)=request.wait();
+                let mut state=client.lock().map_err(|_|Error::Storage)?;
+                state.session.as_mut().ok_or(Error::LoginRequired)?.finish_conversation(binding,result)?
+            }
+            other=>client.lock().map_err(|_| Error::Storage)?.execute(other)?,
+        };
         unsafe {
             *out = insert(Object::Bytes(
                 serde_json::to_vec(&result).map_err(|_| Error::Protocol)?,

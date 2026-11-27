@@ -1,0 +1,3 @@
+# Conversation concurrency
+
+The existing ABI now prepares allowlisted conversation requests under the session mutex, executes HTTPS without that mutex, and checks the access credential when delivering the result. Refresh and legacy account operations remain serialized. A stale result or 401 from a replaced credential is rejected rather than modifying the new session. An in-flight write can already have committed; callers must reconcile by UUID/revision. No automatic replay, additional enrollment, or changed ABI. This is not a guarantee that refresh or a slow legacy operation cannot delay request preparation/completion. Windows release build and live concurrency tests are required.
