@@ -21,10 +21,24 @@ pub enum Error {
     Expired,
     LoginRequired,
     Conflict,
+    Quota,
     NoActivePersona,
     NotFound,
     Storage,
     Rejected(u16),
+}
+
+const LEGACY_SCOPES: &[&str] = &["profile","persona","memory"];
+const ALL_SCOPES: &[&str] = &["profile","persona","memory","conversation.read",
+    "conversation.write","conversation.generate","conversation.delete"];
+
+fn valid_scopes(scopes: &[&str]) -> bool {
+    !scopes.is_empty() && scopes.len() <= ALL_SCOPES.len()
+        && scopes.iter().enumerate().all(|(i,s)| ALL_SCOPES.contains(s) && !scopes[..i].contains(s))
+        && scopes.contains(&"profile")
+        && (!scopes.contains(&"conversation.write") || scopes.contains(&"conversation.read"))
+        && (!(scopes.contains(&"conversation.generate") || scopes.contains(&"conversation.delete"))
+            || scopes.contains(&"conversation.write"))
 }
 
 fn origin(raw: &str) -> Result<String, Error> {
@@ -45,14 +59,18 @@ fn credential_binding(base: &str, ca_pem: Option<&[u8]>) -> String {
 }
 
 fn receive<T: DeserializeOwned>(request: RequestBuilder, expected: u16) -> Result<T, Error> {
+    receive_bounded(request, expected, 2_097_152)
+}
+
+fn receive_bounded<T: DeserializeOwned>(request: RequestBuilder, expected: u16, max: usize) -> Result<T, Error> {
     let response = request.send().map_err(|_| Error::Transport)?;
     let status = response.status().as_u16();
     let mut bytes = Zeroizing::new(Vec::new());
     response
-        .take(2_097_153)
+        .take((max + 1) as u64)
         .read_to_end(&mut bytes)
         .map_err(|_| Error::Transport)?;
-    if bytes.len() > 2_097_152 {
+    if bytes.len() > max {
         return Err(Error::Protocol);
     }
     if status != expected {
@@ -67,7 +85,10 @@ fn receive<T: DeserializeOwned>(request: RequestBuilder, expected: u16) -> Resul
             (400, Some("access_denied")) => Error::Denied,
             (400, Some("expired_token")) => Error::Expired,
             (400, Some("invalid_grant")) | (401, _) => Error::LoginRequired,
-            (409, Some("revision_conflict")) => Error::Conflict,
+            (409, Some("revision_conflict" | "conflict")) => Error::Conflict,
+            (409, Some("quota_exhausted")) => Error::Quota,
+            (403, _) => Error::Denied,
+            (429, _) => Error::SlowDown,
             (409, Some("no_active_persona")) => Error::NoActivePersona,
             (404, _) => Error::NotFound,
             _ => Error::Rejected(status),
@@ -157,13 +178,27 @@ impl AccountClient {
         &self.config.issuer
     }
     pub fn authorize(&self, name: &str) -> Result<DeviceGrant, Error> {
+        self.authorize_impl(name, None)
+    }
+    /// Explicit browser-approved permissions; never silently upgrade a legacy device.
+    pub fn authorize_scoped(&self, name: &str, scopes: &[String]) -> Result<DeviceGrant, Error> {
+        let requested: Vec<&str> = scopes.iter().map(String::as_str).collect();
+        if !valid_scopes(&requested) || !scopes.iter().all(|s| self.config.scopes_supported.contains(s)) {
+            return Err(Error::Protocol);
+        }
+        self.authorize_impl(name, Some(scopes))
+    }
+    fn authorize_impl(&self, name: &str, scopes: Option<&[String]>) -> Result<DeviceGrant, Error> {
         if !(1..=100).contains(&name.trim().chars().count()) {
             return Err(Error::Protocol);
         }
         let reply: DeviceReply = receive(
             self.client
                 .post(&self.config.device_authorization_endpoint)
-                .json(&json!({"device_name":name})),
+                .json(&match scopes {
+                    Some(scopes) => json!({"device_name":name,"scopes":scopes}),
+                    None => json!({"device_name":name}),
+                }),
             200,
         )?;
         let code = reply.user_code.as_bytes();
@@ -193,6 +228,7 @@ impl AccountClient {
             interval,
             next: now + interval,
             finished: false,
+            requested: scopes.map(|s|s.to_vec()).unwrap_or_else(||LEGACY_SCOPES.iter().map(|s|s.to_string()).collect()),
         })
     }
 }
@@ -214,6 +250,7 @@ pub struct DeviceGrant {
     pub interval: Duration,
     next: Instant,
     finished: bool,
+    requested: Vec<String>,
 }
 #[derive(Deserialize)]
 pub struct Tokens {
@@ -238,9 +275,7 @@ impl Tokens {
         if self.token_type != "Bearer"
             || !(1..=86400).contains(&self.expires_in)
             || uuid::Uuid::parse_str(&self.device_id).is_err()
-            || !["profile", "persona", "memory"]
-                .iter()
-                .all(|scope| self.scope.split_whitespace().any(|s| s == *scope))
+            || !valid_scopes(&self.scope.split_whitespace().collect::<Vec<_>>())
             || [&self.access_token, &self.refresh_token].iter().any(|s| {
                 !(32..=256).contains(&s.len())
                     || !s
@@ -285,6 +320,9 @@ impl DeviceGrant {
         self.next = Instant::now() + self.interval;
         let mut tokens = result?;
         tokens.validate()?;
+        if !tokens.scope.split_whitespace().all(|s| self.requested.iter().any(|r|r==s)) {
+            return Err(Error::Protocol);
+        }
         tokens.binding = self.client.binding.clone();
         Ok(tokens)
     }
@@ -303,6 +341,8 @@ struct Stored {
     account_id: uuid::Uuid,
     device_id: uuid::Uuid,
     refresh: String,
+    #[serde(default)]
+    scope: Option<String>,
 }
 impl Drop for Stored {
     fn drop(&mut self) {
@@ -402,6 +442,7 @@ mod platform_store {
                 account_id: identity.account_id,
                 device_id: identity.device_id,
                 refresh: tokens.refresh_token.clone(),
+                scope: Some(identity.scope.clone()),
             };
             let bytes = Zeroizing::new(serde_json::to_string(&record).map_err(|_| Error::Storage)?);
             v.entry.set_password(&bytes).map_err(|_| Error::Storage)
@@ -458,7 +499,10 @@ mod platform_store {
                 200,
             )?;
             let identity = self.identity(&tokens)?;
-            if identity.account_id != stored.account_id || identity.device_id != stored.device_id {
+            let prior_scope = stored.scope.as_deref().unwrap_or("profile persona memory");
+            if identity.account_id != stored.account_id || identity.device_id != stored.device_id
+                || identity.scope != prior_scope
+                || expected.is_some_and(|i| i.scope != identity.scope) {
                 return Err(Error::LoginRequired);
             }
             self.persist(&v, &identity, &tokens)?;
@@ -1099,8 +1143,233 @@ impl Session {
         Ok(found)
     }
 }
+
+const CONVERSATION_MAX: usize = 9 * 1024 * 1024;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all="snake_case")]
+pub enum ConversationOp {
+    List,
+    Get,
+    Messages,
+    ActivePath,
+    Changes,
+    Selection,
+    Storage,
+    GenerationStatus,
+    GenerationDraft,
+    ToolRecord,
+    Create,
+    Append,
+    Rename,
+    Transition,
+    Purge,
+    Select,
+    SelectPath,
+    GenerationStart,
+    GenerationHeartbeat,
+    GenerationCheckpoint,
+    GenerationComplete,
+    GenerationHandover,
+    GenerationRelease,
+    ToolClaim,
+    ToolConfirm,
+    ToolReview,
+    OfflineImport,
+}
+impl ConversationOp {
+    fn spec(self) -> (&'static str, &'static str, bool, &'static [&'static str], &'static [&'static str]) {
+        match self {
+            Self::List => ("","conversation.read",false,&["persona_id","view","after_id","limit"],&[]),
+            Self::Get => ("/get","conversation.read",false,&["conversation_id"],&["conversation_id"]),
+            Self::Messages => ("/messages","conversation.read",false,&["conversation_id","after","limit"],&["conversation_id"]),
+            Self::ActivePath => ("/active-path","conversation.read",false,&["conversation_id","expected_revision","before","limit"],&["conversation_id","expected_revision"]),
+            Self::Changes => ("/changes","conversation.read",false,&["after","limit"],&[]),
+            Self::Selection => ("/selection","conversation.read",false,&["persona_id","latest"],&["persona_id"]),
+            Self::Storage => ("/storage","conversation.read",false,&[],&[]),
+            Self::GenerationStatus => ("/generation/status","conversation.read",false,&["conversation_id"],&["conversation_id"]),
+            Self::GenerationDraft => ("/generation/draft","conversation.generate",false,&["conversation_id","generation_id"],&["conversation_id","generation_id"]),
+            Self::ToolRecord => ("/tool/record","conversation.read",false,&["conversation_id","execution_id"],&["conversation_id","execution_id"]),
+            Self::Create => ("/create","conversation.write",true,&["operation_id","conversation_id","persona_id","title"],&["operation_id","conversation_id","persona_id","title"]),
+            Self::Append => ("/append","conversation.write",true,&["operation_id","conversation_id","message_id","turn_id","parent_id","expected_revision","content","fork"],&["operation_id","conversation_id","message_id","turn_id","parent_id","expected_revision","content"]),
+            Self::Rename => ("/rename","conversation.write",true,&["operation_id","conversation_id","expected_revision","title"],&["operation_id","conversation_id","expected_revision","title"]),
+            Self::Transition => ("/transition","conversation.write",true,&["operation_id","conversation_id","expected_revision","action"],&["operation_id","conversation_id","expected_revision","action"]),
+            Self::Purge => ("/purge","conversation.delete",true,&["operation_id","conversation_id","expected_revision","confirm"],&["operation_id","conversation_id","expected_revision","confirm"]),
+            Self::Select => ("/select","conversation.write",true,&["operation_id","conversation_id"],&["operation_id","conversation_id"]),
+            Self::SelectPath => ("/select-path","conversation.write",true,&["operation_id","conversation_id","expected_revision","head_id"],&["operation_id","conversation_id","expected_revision","head_id"]),
+            Self::GenerationStart => ("/generation/start","conversation.generate",true,&["operation_id","conversation_id","generation_id","expected_revision","force"],&["operation_id","conversation_id","generation_id","expected_revision"]),
+            Self::GenerationHeartbeat => ("/generation/heartbeat","conversation.generate",true,&["conversation_id","generation_id","fence"],&["conversation_id","generation_id","fence"]),
+            Self::GenerationCheckpoint => ("/generation/checkpoint","conversation.generate",true,&["operation_id","conversation_id","generation_id","fence","version","content"],&["operation_id","conversation_id","generation_id","fence","version","content"]),
+            Self::GenerationComplete => ("/generation/complete","conversation.generate",true,&["operation_id","conversation_id","generation_id","fence","message_id","content"],&["operation_id","conversation_id","generation_id","fence","message_id","content"]),
+            Self::GenerationHandover => ("/generation/handover","conversation.generate",true,&["conversation_id","generation_id","fence"],&["conversation_id","generation_id","fence"]),
+            Self::GenerationRelease => ("/generation/release","conversation.generate",true,&["conversation_id","generation_id","fence","handover"],&["conversation_id","generation_id","fence"]),
+            Self::ToolClaim => ("/tool/claim","conversation.generate",true,&["operation_id","conversation_id","generation_id","fence","execution_id","call"],&["operation_id","conversation_id","generation_id","fence","execution_id","call"]),
+            Self::ToolConfirm => ("/tool/confirm","conversation.generate",true,&["operation_id","conversation_id","generation_id","fence","execution_id","result"],&["operation_id","conversation_id","generation_id","fence","execution_id","result"]),
+            Self::ToolReview => ("/tool/review","conversation.generate",true,&["operation_id","conversation_id","generation_id","fence","execution_id","acknowledge"],&["operation_id","conversation_id","generation_id","fence","execution_id","acknowledge"]),
+            Self::OfflineImport => ("/offline/import","conversation.generate",true,&["operation_id","account_id","device_id","persona_id","destination_id","title","messages","source_id","base_revision","base_head"],&["operation_id","account_id","device_id","persona_id","destination_id","title","messages"]),
+        }
+    }
+    fn validate(self, args: &serde_json::Map<String,serde_json::Value>) -> Result<(),Error> {
+        let (_,_,post,allowed,required)=self.spec();
+        if args.keys().any(|k| !allowed.contains(&k.as_str()))
+            || required.iter().any(|k| !args.contains_key(*k)) {
+            return Err(Error::Protocol);
+        }
+        for (key,val) in args {
+            let nullable=matches!(key.as_str(),"parent_id"|"head_id"|"source_id"|"base_head"|"base_revision");
+            if nullable && val.is_null() && post { continue; }
+            let valid=match key.as_str() {
+                "after" | "limit" | "expected_revision" | "base_revision" | "fence" | "version" =>
+                    val.as_u64().is_some_and(|n|n<i64::MAX as u64 &&
+                        if key=="limit" { (1..=if matches!(self,Self::Messages|Self::ActivePath){4}else{100}).contains(&n) }
+                        else if key=="after" {true} else {n>0}),
+                "latest"|"fork"|"force"|"handover"|"acknowledge" => val.is_boolean(),
+                "messages" => val.is_array(),
+                "call"|"result" => true,
+                "before"|"base_head"|"after_id" => val.as_str().is_some_and(|s|uuid::Uuid::parse_str(s).is_ok()),
+                k if k.ends_with("_id") => val.as_str().is_some_and(|s|uuid::Uuid::parse_str(s).is_ok()),
+                _ => val.is_string(),
+            };
+            if !valid {return Err(Error::Protocol);}
+        }
+        Ok(())
+    }
+}
+
+#[derive(Deserialize)]
+struct ConversationReply {
+    // Value (not Option) requires an explicit result field, including null.
+    result: serde_json::Value,
+}
+
+#[derive(serde::Serialize, Debug, PartialEq, Eq)]
+pub struct ConversationEvent {
+    pub cursor: Option<u64>,
+}
+pub struct ConversationEventRequest {
+    request: RequestBuilder,
+    after: u64,
+}
+fn parse_event(bytes: &[u8], after: u64) -> Result<ConversationEvent,Error> {
+    let text=std::str::from_utf8(bytes).map_err(|_|Error::Protocol)?;
+    let mut cursor=None;
+    let mut event=None;
+    for line in text.lines() {
+        if line.is_empty() {
+            if event.take().is_some() && cursor.is_none() {return Err(Error::Protocol);}
+        } else if line=="event: invalidate" {
+            if event.is_some() || cursor.is_some() {return Err(Error::Protocol);}
+            event=Some(());
+        } else if let Some(data)=line.strip_prefix("data: ") {
+            if event.is_none() || cursor.is_some() {return Err(Error::Protocol);}
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Notice {cursor:u64}
+            let n:Notice=serde_json::from_str(data).map_err(|_|Error::Protocol)?;
+            if n.cursor<=after || n.cursor>=i64::MAX as u64 {return Err(Error::Protocol);}
+            cursor=Some(n.cursor);
+        } else if !(line.starts_with(':') || line=="retry: 2000") {
+            return Err(Error::Protocol);
+        }
+    }
+    if event.is_some() || !text.ends_with("\n\n") {return Err(Error::Protocol);}
+    Ok(ConversationEvent{cursor})
+}
+impl ConversationEventRequest {
+    /// A finite notification wait; no mutable session borrow or global ABI lock.
+    /// Never use the returned hint as the applied change cursor.
+    pub fn wait(self) -> Result<ConversationEvent,Error> {
+        let response=self.request.send().map_err(|_|Error::Transport)?;
+        match response.status().as_u16() {
+            200=>(),401=>return Err(Error::LoginRequired),403=>return Err(Error::Denied),
+            404=>return Err(Error::NotFound),429=>return Err(Error::SlowDown),
+            n=>return Err(Error::Rejected(n)),
+        }
+        if !response.headers().get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v|v.to_str().ok()).is_some_and(|v|v.split(';').next()==Some("text/event-stream")) {
+            return Err(Error::Protocol);
+        }
+        let mut bytes=Vec::new();
+        response.take(16385).read_to_end(&mut bytes).map_err(|_|Error::Transport)?;
+        if bytes.len()>16384 {return Err(Error::Protocol);}
+        parse_event(&bytes,self.after)
+    }
+}
+
+impl Session {
+    /// Explicit, allowlisted conversation call; caller owns operation UUIDs and retry policy.
+    pub fn conversation(&mut self, op: ConversationOp, args: serde_json::Map<String,serde_json::Value>) -> Result<serde_json::Value,Error> {
+        op.validate(&args)?;
+        self.ready()?;
+        let (path,scope,post,_,_)=op.spec();
+        let granted:Vec<_>=self.identity.scope.split_whitespace().collect();
+        if !granted.contains(&scope) || (op==ConversationOp::Transition &&
+            matches!(args.get("action").and_then(|v|v.as_str()),Some("delete"|"restore")) &&
+            !granted.contains(&"conversation.delete")) {return Err(Error::Denied);}
+        if op==ConversationOp::OfflineImport &&
+            (args.get("account_id").and_then(|v|v.as_str()).and_then(|s|uuid::Uuid::parse_str(s).ok())!=Some(self.identity.account_id)
+            || args.get("device_id").and_then(|v|v.as_str()).and_then(|s|uuid::Uuid::parse_str(s).ok())!=Some(self.identity.device_id)) {
+            return Err(Error::Denied);
+        }
+        let mut url=Url::parse(&format!("{}/v1/auth/conversations{}",self.client.issuer(),path)).map_err(|_|Error::Origin)?;
+        let request=if post {
+            let raw=serde_json::to_vec(&args).map_err(|_|Error::Protocol)?;
+            if raw.len()>CONVERSATION_MAX {return Err(Error::Protocol);}
+            self.client.client.post(url).header(reqwest::header::CONTENT_TYPE,"application/json").body(raw)
+        } else {
+            {let mut query=url.query_pairs_mut();
+            for (k,v) in &args {
+                let value=v.as_str().map(str::to_owned).unwrap_or_else(||v.to_string());
+                query.append_pair(k,&value);
+            }}
+            self.client.client.get(url)
+        };
+        let result=receive_bounded::<ConversationReply>(request.bearer_auth(&*self.access)
+            .timeout(Duration::from_secs(60)),200,CONVERSATION_MAX);
+        if matches!(result,Err(Error::LoginRequired)) {zeroize::Zeroize::zeroize(&mut *self.access);}
+        let value=result?.result;
+        // A successful fresh claim must explicitly declare dispatch and bind its ID.
+        if op==ConversationOp::ToolClaim &&
+            (value.get("dispatch").and_then(|v|v.as_bool()).is_none()
+             || value.get("execution_id")!=args.get("execution_id")) {
+            return Err(Error::Protocol);
+        }
+        Ok(value)
+    }
+    pub fn conversation_event_request(&mut self, after:u64)->Result<ConversationEventRequest,Error> {
+        if after>=i64::MAX as u64 {return Err(Error::Protocol);}
+        self.ready()?;
+        if !self.identity.scope.split_whitespace().any(|s|s=="conversation.read"){return Err(Error::Denied);}
+        let request=self.client.client.get(format!("{}/v1/auth/conversations/events",self.client.issuer()))
+            .query(&[("after",after)]).header(reqwest::header::ACCEPT,"text/event-stream")
+            .bearer_auth(&*self.access).timeout(Duration::from_secs(30));
+        Ok(ConversationEventRequest{request,after})
+    }
+}
+
 #[cfg(test)]
 mod account_tests {
+    #[test]
+    fn conversation_scopes_and_requests() {
+        assert!(valid_scopes(&["profile","conversation.read"]));
+        assert!(!valid_scopes(&["profile","conversation.generate"]));
+        assert!(!valid_scopes(&["profile","profile"]));
+        let args=json!({"conversation_id":uuid::Uuid::new_v4(),"limit":4});
+        assert!(ConversationOp::Messages.validate(args.as_object().unwrap()).is_ok());
+        let args=json!({"conversation_id":uuid::Uuid::new_v4(),"limit":100});
+        assert!(ConversationOp::Messages.validate(args.as_object().unwrap()).is_err());
+        assert!(ConversationOp::Create.validate(json!({"account_id":uuid::Uuid::new_v4()}).as_object().unwrap()).is_err());
+        assert!(serde_json::from_str::<ConversationReply>("{}").is_err());
+        assert!(serde_json::from_str::<ConversationReply>(r#"{"result":null}"#).is_ok());
+    }
+    #[test]
+    fn conversation_sse_is_a_hint_not_a_receipt() {
+        assert_eq!(parse_event(b"retry: 2000\n: connected\n\nevent: invalidate\ndata: {\"cursor\":4}\n\n",3).unwrap().cursor,Some(4));
+        assert_eq!(parse_event(b": connected\n\n: heartbeat\n\n",3).unwrap().cursor,None);
+        assert!(parse_event(b"event: invalidate\ndata: {\"cursor\":3}\n\n",3).is_err());
+        assert!(parse_event(b"id: 4\nevent: invalidate\ndata: {\"cursor\":4}\n\n",3).is_err());
+        assert!(parse_event(b"event: invalidate\ndata: {\"cursor\":4}\n",3).is_err());
+    }
+
     use super::*;
 
     #[test]

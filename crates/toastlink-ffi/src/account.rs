@@ -11,7 +11,7 @@ use std::{
     },
     time::Instant,
 };
-use toastlink_core::account::{AccountClient, Actor, DeviceGrant, Error, Session, VisualKind};
+use toastlink_core::account::{AccountClient, Actor, ConversationOp, DeviceGrant, Error, Session, VisualKind};
 use uuid::Uuid;
 
 struct State {
@@ -47,6 +47,7 @@ fn error(e: Error) -> i32 {
         Error::NoActivePersona => 11,
         Error::NotFound => 12,
         Error::Storage => 13,
+        Error::Quota => 15,
         Error::Rejected(n) => 1000 + i32::from(n),
     }
 }
@@ -97,6 +98,8 @@ enum Op {
     Authorize {
         device_name: String,
     },
+    AuthorizeScoped { device_name: String, scopes: Vec<String> },
+    Conversation { action: ConversationOp, args: serde_json::Map<String,Value> },
     Poll,
     Restore,
     Identity,
@@ -185,6 +188,12 @@ impl State {
                 self.pending = Some(grant);
                 return Ok(meta);
             }
+            Op::AuthorizeScoped { device_name, scopes } => {
+                let grant = self.client.authorize_scoped(&device_name, &scopes)?;
+                let meta = json!({"user_code":grant.user_code,"verification_url":grant.verification_url,"expires_in":grant.deadline.saturating_duration_since(Instant::now()).as_secs(),"interval":grant.interval.as_secs()});
+                self.pending = Some(grant);
+                return Ok(meta);
+            }
             Op::Poll => {
                 let grant = self.pending.as_mut().ok_or(Error::Expired)?;
                 let tokens = grant.poll()?;
@@ -212,6 +221,7 @@ impl State {
         let s = self.session.as_mut().ok_or(Error::LoginRequired)?;
         Ok(match op {
             Op::Identity => json!(s.me()?),
+            Op::Conversation { action,args } => s.conversation(action,args)?,
             Op::Disconnect => {
                 s.revoke()?;
                 self.client.forget_device(s.identity())?;
@@ -314,8 +324,11 @@ pub unsafe extern "C" fn toast_account_v2_call(
         *out = 0;
     }
     boundary(|| {
-        let op: Op =
-            serde_json::from_slice(unsafe { input(data, len)? }).map_err(|_| Error::Protocol)?;
+        // Only conversation requests may use the expanded history payload limit.
+        if data.is_null() || len==0 || len>9*1024*1024+4096 {return Err(Error::Protocol);}
+        let raw=unsafe { std::slice::from_raw_parts(data,len) };
+        let op:Op=serde_json::from_slice(raw).map_err(|_|Error::Protocol)?;
+        if len>1_048_576 && !matches!(&op,Op::Conversation{..}) {return Err(Error::Protocol);}
         let client = match OBJECTS.lock().map_err(|_| Error::Storage)?.get(&handle) {
             Some(Object::Client(c)) => c.clone(),
             _ => return Err(Error::Protocol),
@@ -326,6 +339,24 @@ pub unsafe extern "C" fn toast_account_v2_call(
                 serde_json::to_vec(&result).map_err(|_| Error::Protocol)?,
             ))?;
         }
+        Ok(())
+    })
+}
+/// Long-poll one finite SSE notification without holding the account session lock.
+#[no_mangle]
+pub unsafe extern "C" fn toast_account_v2_conversation_events(handle:u64,after:u64,out:*mut u64)->i32 {
+    if out.is_null(){return 3;}
+    unsafe{*out=0;}
+    boundary(|| {
+        let client=match OBJECTS.lock().map_err(|_|Error::Storage)?.get(&handle) {
+            Some(Object::Client(c))=>c.clone(),_=>return Err(Error::Protocol),
+        };
+        let request={
+            let mut state=client.lock().map_err(|_|Error::Storage)?;
+            state.session.as_mut().ok_or(Error::LoginRequired)?.conversation_event_request(after)?
+        };
+        let result=request.wait()?;
+        unsafe{*out=insert(Object::Bytes(serde_json::to_vec(&result).map_err(|_|Error::Protocol)?))?;}
         Ok(())
     })
 }
@@ -385,6 +416,13 @@ pub unsafe extern "C" fn toast_account_v2_forget_local(data: *const u8, len: usi
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn conversation_abi_parses_explicit_scopes_and_allowlisted_operations() {
+        assert!(serde_json::from_str::<Op>(r#"{"op":"authorize_scoped","device_name":"desktop","scopes":["profile","conversation.read"]}"#).is_ok());
+        assert!(serde_json::from_str::<Op>(r#"{"op":"conversation","action":"changes","args":{"after":0}}"#).is_ok());
+        assert!(serde_json::from_str::<Op>(r#"{"op":"conversation","action":"arbitrary_url","args":{}}"#).is_err());
+    }
+
     use super::*;
     #[test]
     fn prepare_preserves_legacy_requests_and_accepts_hybrid_mode() {

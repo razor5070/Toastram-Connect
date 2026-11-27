@@ -13,6 +13,10 @@ int32_t toast_account_v2_call(uint64_t client,const uint8_t*,size_t,uint64_t* re
 int32_t toast_account_v2_copy(uint64_t result,uint8_t* destination,size_t capacity,size_t* size);
 /* Offline deletion for exactly this origin and trust selection. No server revocation. */
 int32_t toast_account_v2_forget_local(const uint8_t* options, size_t size);
+/* Finite SSE wait, run on a separate worker. Result is {"cursor":N|null};
+   cursor is an invalidation hint, not an acknowledged change cursor.
+   Existing account calls may run while waiting. No automatic retries. */
+int32_t toast_account_v2_conversation_events(uint64_t client, uint64_t after, uint64_t* result);
 int32_t toast_account_v2_release(uint64_t handle);
 #ifdef __cplusplus
 }
