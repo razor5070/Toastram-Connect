@@ -39,3 +39,5 @@ Forgetting locally cannot guarantee revocation when the server cannot be reached
 The standalone toast_account_v2_forget_local function accepts the same origin and CA options as open and erases the bound local credential without contacting the server.
 
 Published visual assets use a single 17-state atlas (2448×1440, 136 frames). The SDK validates the V2 manifest and owner-review bindings before returning metadata. The former expansion operations are rejected. Portrait downloads are bounded to 2 MiB; atlas downloads to 8 MiB. For visual_asset results only, a 12 MiB host copy ceiling accommodates the maximum base64 JSON envelope; the input limit and nonvisual operations are unchanged. Query the actual result length before allocating. The host must decode and check image dimensions and atomically apply matching persona-scoped assets.
+
+Server announcements: see [Announcement ABI v1](ANNOUNCEMENT-ABI-v1.md). The new operations use existing account ABI symbols.

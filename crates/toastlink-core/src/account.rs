@@ -8,6 +8,10 @@ use std::{
 use url::Url;
 use zeroize::Zeroizing;
 
+#[path = "announcements.rs"]
+mod announcements;
+pub use announcements::{AnnouncementRequest, AnnouncementResponse};
+
 pub const HOSTED_ORIGIN: &str = "https://accounts.raznet.online";
 const GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -356,6 +360,8 @@ pub struct Session {
     identity: Identity,
     access: Zeroizing<String>,
     expires: Instant,
+    announcement_epoch: u64,
+    announcement_candidates: std::collections::BTreeMap<uuid::Uuid, announcements::Candidate>,
 }
 impl AccountClient {
     fn identity(&self, tokens: &Tokens) -> Result<Identity, Error> {
@@ -377,6 +383,8 @@ impl AccountClient {
             identity,
             access: Zeroizing::new(tokens.access_token.clone()),
             expires: Instant::now() + Duration::from_secs(tokens.expires_in.saturating_sub(15)),
+            announcement_epoch: 0,
+            announcement_candidates: std::collections::BTreeMap::new(),
         }
     }
 }

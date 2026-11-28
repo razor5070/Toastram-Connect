@@ -101,6 +101,9 @@ enum Op {
     AuthorizeScoped { device_name: String, scopes: Vec<String> },
     Conversation { action: ConversationOp, args: serde_json::Map<String,Value> },
     Poll,
+    AnnouncementPoll,
+    AnnouncementClaim { id: Uuid },
+    AnnouncementAck { id: Uuid },
     Restore,
     Identity,
     Disconnect,
@@ -221,6 +224,7 @@ impl State {
         let s = self.session.as_mut().ok_or(Error::LoginRequired)?;
         Ok(match op {
             Op::Identity => json!(s.me()?),
+            Op::AnnouncementClaim { id } => s.claim_announcement(id)?,
             Op::Conversation { action,args } => s.conversation(action,args)?,
             Op::Disconnect => {
                 s.revoke()?;
@@ -343,6 +347,20 @@ pub unsafe extern "C" fn toast_account_v2_call(
                 let mut state=client.lock().map_err(|_|Error::Storage)?;
                 state.session.as_mut().ok_or(Error::LoginRequired)?.finish_conversation(binding,result)?
             }
+            Op::AnnouncementPoll | Op::AnnouncementAck { .. } => {
+                let request = {
+                    let mut state = client.lock().map_err(|_| Error::Storage)?;
+                    let session = state.session.as_mut().ok_or(Error::LoginRequired)?;
+                    match op {
+                        Op::AnnouncementPoll => session.announcement_poll_request()?,
+                        Op::AnnouncementAck { id } => session.announcement_ack_request(id)?,
+                        _ => return Err(Error::Protocol),
+                    }
+                };
+                let response = request.wait();
+                let mut state = client.lock().map_err(|_| Error::Storage)?;
+                state.session.as_mut().ok_or(Error::LoginRequired)?.finish_announcement(response)?
+            }
             other=>client.lock().map_err(|_| Error::Storage)?.execute(other)?,
         };
         unsafe {
@@ -427,6 +445,12 @@ pub unsafe extern "C" fn toast_account_v2_forget_local(data: *const u8, len: usi
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn announcement_operations_are_strict() {
+        assert!(matches!(serde_json::from_str::<super::Op>(r#"{"op":"announcement_poll"}"#).unwrap(), super::Op::AnnouncementPoll));
+        assert!(serde_json::from_str::<super::Op>(r#"{"op":"announcement_poll","account_id":"forged"}"#).is_err());
+        assert!(serde_json::from_str::<super::Op>(r#"{"op":"announcement_ack"}"#).is_err());
+    }
     #[test]
     fn conversation_abi_parses_explicit_scopes_and_allowlisted_operations() {
         assert!(serde_json::from_str::<Op>(r#"{"op":"authorize_scoped","device_name":"desktop","scopes":["profile","conversation.read"]}"#).is_ok());
