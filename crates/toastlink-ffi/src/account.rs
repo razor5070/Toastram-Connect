@@ -101,7 +101,7 @@ enum Op {
     AuthorizeScoped { device_name: String, scopes: Vec<String> },
     Conversation { action: ConversationOp, args: serde_json::Map<String,Value> },
     Poll,
-    AnnouncementPoll,
+    AnnouncementPoll {},
     AnnouncementClaim { id: Uuid },
     AnnouncementAck { id: Uuid },
     Restore,
@@ -347,12 +347,12 @@ pub unsafe extern "C" fn toast_account_v2_call(
                 let mut state=client.lock().map_err(|_|Error::Storage)?;
                 state.session.as_mut().ok_or(Error::LoginRequired)?.finish_conversation(binding,result)?
             }
-            Op::AnnouncementPoll | Op::AnnouncementAck { .. } => {
+            Op::AnnouncementPoll {} | Op::AnnouncementAck { .. } => {
                 let request = {
                     let mut state = client.lock().map_err(|_| Error::Storage)?;
                     let session = state.session.as_mut().ok_or(Error::LoginRequired)?;
                     match op {
-                        Op::AnnouncementPoll => session.announcement_poll_request()?,
+                        Op::AnnouncementPoll {} => session.announcement_poll_request()?,
                         Op::AnnouncementAck { id } => session.announcement_ack_request(id)?,
                         _ => return Err(Error::Protocol),
                     }
@@ -447,7 +447,7 @@ pub unsafe extern "C" fn toast_account_v2_forget_local(data: *const u8, len: usi
 mod tests {
     #[test]
     fn announcement_operations_are_strict() {
-        assert!(matches!(serde_json::from_str::<super::Op>(r#"{"op":"announcement_poll"}"#).unwrap(), super::Op::AnnouncementPoll));
+        assert!(matches!(serde_json::from_str::<super::Op>(r#"{"op":"announcement_poll"}"#).unwrap(), super::Op::AnnouncementPoll {}));
         assert!(serde_json::from_str::<super::Op>(r#"{"op":"announcement_poll","account_id":"forged"}"#).is_err());
         assert!(serde_json::from_str::<super::Op>(r#"{"op":"announcement_ack"}"#).is_err());
     }
