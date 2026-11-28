@@ -1,5 +1,5 @@
 //! Bounded, device-scoped notice delivery. No conversation or memory integration.
-use super::{finish_bound_conversation, receive_bounded, ConversationResponseBinding, Error, Session};
+use super::{receive_bounded, ConversationResponseBinding, Error, Session};
 use chrono::{DateTime, FixedOffset};
 use reqwest::blocking::RequestBuilder;
 use serde::Deserialize;
@@ -201,6 +201,23 @@ impl AnnouncementRequest {
     }
 }
 
+// An optional endpoint must never rotate or invalidate shared credentials.
+// The normal account health/foreground path owns refresh and authentication.
+fn optional_access(access: &str, expires: Instant) -> Result<(), Error> {
+    if access.is_empty() || Instant::now() >= expires {
+        return Err(Error::LoginRequired);
+    }
+    Ok(())
+}
+
+fn finish_optional(access: &str, binding: ConversationResponseBinding,
+                   result: Result<Value, Error>) -> Result<Value, Error> {
+    if access.is_empty() || access != binding.access.as_str() {
+        return Err(Error::LoginRequired);
+    }
+    result
+}
+
 impl Session {
     fn receipt_dir(&self) -> Result<PathBuf, Error> {
         Ok(scoped_dir(&root()?, &self.client.binding,
@@ -208,14 +225,14 @@ impl Session {
     }
 
     pub fn announcement_poll_request(&mut self) -> Result<AnnouncementRequest, Error> {
-        self.ready()?;
+        optional_access(&self.access, self.expires)?;
         self.announcement_epoch = self.announcement_epoch.checked_add(1).ok_or(Error::Protocol)?;
         self.announcement_candidates.clear();
         self.announcement_request(Kind::Poll(self.announcement_epoch), "poll", json!({}))
     }
 
     pub fn announcement_ack_request(&mut self, id: Uuid) -> Result<AnnouncementRequest, Error> {
-        self.ready()?;
+        optional_access(&self.access, self.expires)?;
         let dir = self.receipt_dir()?;
         if !receipt_exists(&dir, id)? {
             return Err(Error::Denied);
@@ -244,7 +261,7 @@ impl Session {
                 return Err(Error::Expired);
             }
         }
-        let value = finish_bound_conversation(&mut self.access, response.binding, response.result)?;
+        let value = finish_optional(&self.access, response.binding, response.result)?;
         match response.kind {
             Kind::Poll(_) => {
                 let batch: Batch = serde_json::from_value(value).map_err(|_| Error::Protocol)?;
@@ -276,7 +293,7 @@ impl Session {
 
     /// Claim before exposing the text to the host UI. Duplicate claim returns null.
     pub fn claim_announcement(&mut self, id: Uuid) -> Result<Value, Error> {
-        self.ready()?;
+        optional_access(&self.access, self.expires)?;
         let candidate = self.announcement_candidates.get(&id).ok_or(Error::Expired)?;
         if Instant::now() >= candidate.deadline {
             return Err(Error::Expired);
@@ -308,6 +325,17 @@ mod tests {
                 starts_at: "2026-11-26T23:00:00+00:00".into(), expires_at: expiry.into(),
             }],
         }
+    }
+
+    #[test]
+    fn optional_auth_never_invalidates_or_rotates_shared_access() {
+        let access = Zeroizing::new("current".to_string());
+        let bound = |token: &str| ConversationResponseBinding { access: Zeroizing::new(token.to_string()) };
+        assert!(matches!(finish_optional(&access, bound("current"), Err(Error::LoginRequired)), Err(Error::LoginRequired)));
+        assert_eq!(access.as_str(), "current");
+        assert!(matches!(finish_optional(&access, bound("old"), Ok(json!({}))), Err(Error::LoginRequired)));
+        assert!(optional_access(&access, Instant::now() - Duration::from_secs(1)).is_err());
+        assert!(optional_access(&access, Instant::now() + Duration::from_secs(10)).is_ok());
     }
 
     #[test]

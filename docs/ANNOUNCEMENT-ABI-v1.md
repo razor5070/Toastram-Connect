@@ -8,8 +8,7 @@ On a single background worker per session, poll approximately every 15 seconds
 while connected; back off on errors and 429 (at least 60 seconds for 429).
 A legacy server may return 404; disable polling until reconnect or upgrade.
 No autonomous SDK thread is started. Calls remain blocking on that worker.
-Poll/ACK release the account session lock during HTTPS I/O. Refresh can still
-take the usual credential rotation lock. Discard results after host session
+Poll/ACK release the account session lock during HTTPS I/O. Announcements never refresh or invalidate shared credentials. An expired or rejected token suspends optional delivery; normal account operations own credential rotation. Discard results after host session
 change; the SDK also rejects replaced access tokens and superseded poll results.
 
 Operations via toast_account_v2_call:
